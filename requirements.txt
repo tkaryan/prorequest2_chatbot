@@ -1,0 +1,5 @@
+
+requests==2.32.4
+python-dotenv==1.1.1
+mysql-connector-python==9.3.0
+algoliasearch==3.0.0

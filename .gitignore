@@ -1,0 +1,28 @@
+# Ignorar entorno virtual
+myvenv/
+
+# Archivos de Python que no deberían ir al repo
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de logs
+*.log
+
+# Configuración local
+.env
+*.sqlite3
+
+# Archivos temporales de editores
+.vscode/
+.idea/
+.DS_Store
+# Variables de entorno (Secretos)
+.env
+*.env
+.env.*
+!.env.example  # Recomendado: subir una plantilla sin claves reales
+
+# Configuración del editor Cursor
+.cursor/
