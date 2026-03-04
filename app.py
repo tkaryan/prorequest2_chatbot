@@ -12,6 +12,7 @@ from collections import defaultdict
 from services.notificacion_services import (
     notification_manager
 )
+import threading
 
 import os
 import json
@@ -486,34 +487,6 @@ def enviar_plantilla_whatsapp(numero: str, nombre_plantilla: str, parametros: Li
             "message": str(e)
         }
 
-def formatear_mensaje_whatsapp_consolidado(documentos, nombre_usuario, tipo):
-    """
-    Formatea el mensaje de WhatsApp según el tipo de notificación
-    """
-    cantidad = len(documentos)
-    
-    if tipo == 'documento_no_atendido':
-        # Para este tipo, usamos plantilla de WhatsApp Business
-        return None
-    
-    # Para otros tipos, formatea el mensaje normal
-    mensaje = f"Hola {nombre_usuario},\n\n"
-    
-    if tipo == 'documento_en_firma':
-        mensaje += f"Tienes {cantidad} documento{'s' if cantidad > 1 else ''} esperando firma.\n\n"
-    elif tipo == 'documentos_antiguos':
-        mensaje += f"Tienes {cantidad} documento{'s' if cantidad > 1 else ''} antiguo{'s' if cantidad > 1 else ''} sin atender.\n\n"
-    elif tipo == 'documento_en_stand_by':
-        mensaje += f"Tienes {cantidad} documento{'s' if cantidad > 1 else ''} en Stand By.\n\n"
-    
-    # Agregar lista de documentos
-    for i, doc in enumerate(documentos, 1):
-        mensaje += f"{i}. {doc.get('numero_documento', 'N/A')}\n"
-        if doc.get('asunto'):
-            mensaje += f"   {doc['asunto']}\n"
-    
-    return mensaje
-
 
 @app.route('/api/notificacion', methods=['POST'])
 def recibir_notificacion():
@@ -776,21 +749,7 @@ def recibir_notificacion_derivado():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
-def formatear_fecha(fecha_str):
-    """
-    Convierte fecha de '2025-06-27 17:11:00' a '27/06/2025'
-    """
-    if not fecha_str or fecha_str == '0000-00-00':
-        return 'Sin fecha'
-    
-    try:
-        fecha_obj = datetime.strptime(fecha_str[:10], '%Y-%m-%d')
-        return fecha_obj.strftime('%d/%m/%Y')
-    except:
-        return fecha_str[:10]
-    
    
-import threading
 def schedule_cleanup():
     limpiar_notificaciones_antiguas()
     # Programar siguiente limpieza

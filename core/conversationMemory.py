@@ -27,7 +27,7 @@ class ConversationMemory:
         self.document_cache: Dict[str, List[Dict]] = {}
         self.max_documents_cache = max_documents_cache
         
-        # NUEVO: Estados de conversación
+        # Estados de conversación
         self.conversation_states: Dict[str, Dict[str, Any]] = {}
         
     def add_turn(self, phone_number: str, user_message: str, bot_response: str, 
@@ -46,7 +46,7 @@ class ConversationMemory:
                 parameters=parameters or {},
                 context=context or {},
                 message_type=message_type,
-                flow=flow  # 🆕 NUEVO
+                flow=flow  #  
             )
             
             self.conversations[phone_number].append(turn)
@@ -172,7 +172,7 @@ class ConversationMemory:
             self._reset_conversation_state(phone_number)
             return True
         
-        # 🆕 LÓGICA MEJORADA CON FLOW
+        #  LÓGICA MEJORADA CON FLOW
         current_flow = state_info.get("current_flow")
         
         # Si está en flow de lista, usar documentos guardados
@@ -342,7 +342,7 @@ class ConversationMemory:
                     "timestamp": turn.timestamp,
                     "position": i,
                     "message_type": turn.message_type,
-                    "flow": turn.flow  # 🆕 NUEVO
+                    "flow": turn.flow  #  
                 })
 
                 params = turn.parameters or {}

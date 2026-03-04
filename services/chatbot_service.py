@@ -1144,34 +1144,6 @@ def numero_autorizado(numero_telefono):
         return resultado[0]  
     return None
 
-#FUNCIÓN DE REGISTRO DE INTENTOS NO AUTORIZADOS
-def registrar_intento_no_autorizado(numero_telefono, mensaje):
-    """Registra intentos de acceso no autorizados"""
-    try:
-        # Crear tabla si no existe
-        query_crear_tabla = """
-            CREATE TABLE IF NOT EXISTS intentos_acceso (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                numero_telefono VARCHAR(20) NOT NULL,
-                mensaje TEXT,
-                fecha_intento DATETIME DEFAULT CURRENT_TIMESTAMP,
-                ip_origen VARCHAR(45)
-            )
-        """
-        ejecutar_query(query_crear_tabla)
-        
-        # Insertar registro del intento
-        query_insert = """
-            INSERT INTO intentos_acceso (numero_telefono, mensaje)
-            VALUES (%s, %s)
-        """
-        ejecutar_query(query_insert, (numero_telefono, mensaje[:500]))  # Limitar longitud del mensaje
-        
-        print(f"🚨 Intento no autorizado registrado: {numero_telefono}")
-        
-    except Exception as e:
-        print(f"❌ Error registrando intento no autorizado: {e}")
-        
 
 
 
@@ -1367,39 +1339,3 @@ def limpiar_notificaciones_antiguas():
     except Exception as e:
         print(f"❌ Error limpiando notificaciones antiguas: {e}")
 
-def listar_notificaciones_usuario(numero_telefono, limit=10):
-    """Lista las notificaciones recientes del usuario"""
-    try:
-        notificaciones = []
-        
-        # Buscar en memoria conversacional
-        if hasattr(conversation_memory, 'conversations') and numero_telefono in conversation_memory.conversations:
-            for turn in conversation_memory.conversations[numero_telefono]:
-                if turn.intent in ["system_notification", "system_notification_list"]:
-                    if turn.intent == "system_notification":
-                        # Notificación única
-                        notificaciones.append({
-                            "timestamp": turn.timestamp,
-                            "tipo": turn.parameters.get("notification_type", "general"),
-                            "mensaje": turn.bot_response[:100] + "..." if len(turn.bot_response) > 100 else turn.bot_response,
-                            "payload": turn.parameters.get("payload"),
-                            "count": 1
-                        })
-                    elif turn.intent == "system_notification_list":
-                        # Lista de notificaciones
-                        count = turn.parameters.get("notification_count", 0)
-                        notificaciones.append({
-                            "timestamp": turn.timestamp,
-                            "tipo": "multiple",
-                            "mensaje": f"Lista de {count} notificaciones",
-                            "count": count
-                        })
-        
-        # Ordenar por timestamp descendente
-        notificaciones.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        return notificaciones[:limit] if notificaciones else []
-        
-    except Exception as e:
-        print(f"❌ Error listando notificaciones: {e}")
-        return []
