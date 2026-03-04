@@ -8,7 +8,6 @@ def normalizar_texto(t: str) -> str:
 
 def extraer_posible_codigo(texto: str):
     """Extrae posibles códigos de documento del texto"""
-    # Acepta: con guiones, sin guiones, con espacios
     t = re.sub(r"[\s\-_]", "", texto.upper())
     m = re.search(r"[A-Z0-9]{5,}", t)
     return m.group(0) if m else None
@@ -37,7 +36,6 @@ def formatear_seguimiento(docs, titulo_personalizado=None):
     if not docs:
         return {"tipo": "vacio", "contenido": "No se encontró información de documentos."}
     
-    # Si recibe un solo documento (dict), convertirlo a lista
     if isinstance(docs, dict):
         docs = [docs]
     
@@ -47,7 +45,6 @@ def formatear_seguimiento(docs, titulo_personalizado=None):
     resultados = []
     multiple = len(docs) > 1
     
-    # Si hay un título personalizado, agregarlo
     if titulo_personalizado:
         resultados.append(f"{EMOJIS['search']} *{titulo_personalizado}*\n")
     
@@ -137,7 +134,6 @@ def formatear_fecha(valor, formato="%d/%m/%Y %H:%M", default="N/A"):
 
 
 
-# ========================= RUTAS DE LA APLICACIÓN =========================
 def normalizar_numero_whatsapp(numero):
     # Eliminar caracteres no numéricos
     numero = ''.join(filter(str.isdigit, numero))

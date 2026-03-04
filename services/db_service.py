@@ -4,11 +4,11 @@ import os
 from mysql.connector import Error
 
 DB_CONFIG = {
-    'host': os.getenv("DB_HOST", "plaindes-db.cvkmsooisfec.us-east-2.rds.amazonaws.com"),
-    'user': os.getenv("DB_USER", "admin"),
-    'password': os.getenv("DB_PASSWORD", "j~BwbFPPyu<~SF!H>j~80Y6cuIqi"),
-    'database': os.getenv("DB_NAME", "prorequestdb"),
-    'port': int(os.getenv('DB_PORT', 3306)),
+    'host': os.getenv("DB_HOST", ""),
+    'user': os.getenv("DB_USER", ""),
+    'password': os.getenv("DB_PASSWORD", ""),
+    'database': os.getenv("DB_NAME", ""),
+    'port': int(os.getenv('DB_PORT', )),
     'charset': 'utf8mb4',
 }
 

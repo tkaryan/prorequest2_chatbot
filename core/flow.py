@@ -24,14 +24,7 @@ def detectar_intencion_con_contexto(texto_usuario: str, phone_number: str, conve
     # Obtener documentos guardados
     documentos_guardados = conversation_memory.get_conversation_documents(phone_number)
     
-    print(f"🔍 Analizando mensaje con contexto completo:")
-    print(f"   Usuario: {texto_usuario[:50]}...")
-    print(f"   Estado: {conversation_state['state']}")
-    print(f"   Contexto: {conversation_context['session_length']} turnos")
-    print(f"   Último intent: {conversation_context.get('last_intent', 'None')}")
-    print(f"   Documentos guardados: {len(documentos_guardados)}")
-    print(f"   Buscar BD completa: {conversation_state['should_search_full_db']}")
-    
+
     # 🔄 RESET MANUAL - Verificar "hola"
     if texto_usuario.lower().strip() in ["hola", "hello", "hi"]:
         print("🔄 Reset manual detectado en flow.py")
