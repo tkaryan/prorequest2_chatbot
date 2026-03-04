@@ -70,8 +70,8 @@ class ConversationMemory:
                 "state_timestamp": time.time(),
                 "has_document_list": False,
                 "last_search_results_count": 0,
-                "current_flow": None,  # 🆕 NUEVO: Rastrea el flow actual
-                "flow_history": []     # 🆕 NUEVO: Historial de flows recientes
+                "current_flow": None,  #  Rastrea el flow actual
+                "flow_history": []     # Historial de flows recientes
             }
         
         state_info = self.conversation_states[phone_number]
@@ -82,7 +82,7 @@ class ConversationMemory:
             self._reset_conversation_state(phone_number)
             return
         
-        # 🆕 ACTUALIZAR FLOW ACTUAL Y HISTORIAL
+        # ACTUALIZAR FLOW ACTUAL Y HISTORIAL
         if flow:
             state_info["current_flow"] = flow
             
@@ -209,7 +209,6 @@ class ConversationMemory:
             self.conversation_states[phone_number]["current_flow"] = "filtered_search"
             self.conversation_states[phone_number]["state_timestamp"] = time.time()
         
-        print(f"🔍 Modo búsqueda filtrada activado para {phone_number}")
 
     def set_awaiting_choice_search_mode(self, phone_number: str):
         """Activa el modo de elección después de verificación"""
@@ -281,8 +280,8 @@ class ConversationMemory:
             "last_search_results_count": state_info["last_search_results_count"],
             "time_since_last_activity": time_since_activity,
             "will_timeout_soon": time_since_activity > 3300,  # Aviso a los 55 minutos
-            "current_flow": state_info.get("current_flow"),    # 🆕 NUEVO
-            "flow_history": state_info.get("flow_history", [])  # 🆕 NUEVO
+            "current_flow": state_info.get("current_flow"),    
+            "flow_history": state_info.get("flow_history", [])  
         }
 
     def get_conversation_history(self, phone_number: str, last_n_turns: int = 5) -> List[ConversationTurn]:
@@ -319,7 +318,7 @@ class ConversationMemory:
                 "awaiting_confirmation": conversation_state["state"] in ["awaiting_choice", "awaiting_verification"],
                 "confirmation_type": "choice" if conversation_state["state"] == "awaiting_choice" else "verification" if conversation_state["state"] == "awaiting_verification" else None,
                 "pending_results": [],
-                # 🆕 NUEVO: Información de flow
+                #Información de flow
                 "current_flow": conversation_state["current_flow"],
                 "flow_history": conversation_state["flow_history"],
                 "is_in_lista_flow": conversation_state["current_flow"] == "lista",

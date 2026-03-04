@@ -1,4 +1,4 @@
-# notification_manager.py - Sistema unificado de notificaciones con tipos
+# notification_manager.py 
 from collections import defaultdict
 from datetime import datetime, timedelta
 import threading
@@ -413,7 +413,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                 notifications_for_memory.append({
                     "id": f"{notification['id']}_doc_{i+1}",
                     "tipo": "documento_en_espera",
-                    "mensaje": mensaje_completo,  # 🔥 MENSAJE COMPLETO
+                    "mensaje": mensaje_completo,  # MENSAJE COMPLETO
                     "payload": doc_info,
                     "timestamp": notification["timestamp"].isoformat() if isinstance(notification["timestamp"], datetime) else str(notification["timestamp"]),
                     "viewed": False,
@@ -443,7 +443,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                 flow="lista_documentos_espera"
             )
             
-            # 🔥 MARCAR ESTADO COMO FLUJO DE NOTIFICACIÓN
+            # MARCAR ESTADO COMO FLUJO DE NOTIFICACIÓN
             conversation_memory.set_conversation_state(
                 numero_telefono,
                 "awaiting_notification_choice",
@@ -452,7 +452,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                     "notifications_available": True,
                     "has_notification_list": True,
                     "is_consolidated": True,
-                    "is_notification_flow": True  # 🔥 ESTO ES CRÍTICO
+                    "is_notification_flow": True  
                 }
             )
             
@@ -480,10 +480,10 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                     "notification_id": notification["id"]
                 },
                 context={
-                    "alert_active": puede_contactar,  # 🔥 TRUE para documentos en espera
-                    "alert_payload": notification["payload"],  # 🔥 GUARDAR PAYLOAD
+                    "alert_active": puede_contactar, 
+                    "alert_payload": notification["payload"],  
                     "notification_timestamp": notification["timestamp"].isoformat() if isinstance(notification["timestamp"], datetime) else str(notification["timestamp"]),
-                    "can_contact_responsible": puede_contactar  # 🔥 MARCAR COMO CONTACTABLE
+                    "can_contact_responsible": puede_contactar 
                 },
                 message_type="notification",
                 flow="notificacion_unica"
@@ -505,9 +505,9 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                 
                 notifications_for_memory.append({
                     "id": f"{notification['id']}_doc_{i+1}",
-                    "tipo": "documento_en_espera",  # 🔥 TIPO CONSISTENTE
+                    "tipo": "documento_en_espera",  
                     "mensaje": mensaje_completo,
-                    "payload": doc_info,  # 🔥 PAYLOAD COMPLETO con encargados
+                    "payload": doc_info,  
                     "timestamp": notification["timestamp"].isoformat() if isinstance(notification["timestamp"], datetime) else str(notification["timestamp"]),
                     "viewed": False,
                     "index": i + 1
@@ -531,7 +531,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
                 "available_notifications": notifications_for_memory,
                 "notification_count": len(documentos),
                 "is_consolidated": True,
-                "can_contact_responsible": True  # 🔥 MARCAR COMO CONTACTABLE
+                "can_contact_responsible": True  
             },
             message_type="notification_list",
             flow="lista_documentos_espera"
@@ -570,7 +570,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
             except (ValueError, TypeError):
                 idx = None
             
-            # 1) BUSCAR EN NOTIFICACIONES ALMACENADAS (todos los tipos)
+            # 1) BUSCAR EN NOTIFICACIONES ALMACENADAS
             if numero_telefono in self.user_notifications:
                 for tipo in ["sin_respuesta", "sin_firma", "inactivos", "stand_by"]:
                     notifications = self.user_notifications[numero_telefono][tipo]
@@ -753,5 +753,4 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
 
 
 
-# Instancia global del gestor de notificaciones
 notification_manager = NotificationManager()

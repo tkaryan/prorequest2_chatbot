@@ -1,4 +1,4 @@
-# chatbot_system.py - Versión mejorada con memoria conversacional funcional
+# chatbot_system.py
 import requests
 import json
 import re
@@ -604,7 +604,6 @@ Responde SOLO JSON válido:
     "confidence": 0.95
 }}
 """
-       # "documentos_encontrados": [lista_de_documentos_que_coinciden],
 
         headers = {
             "Content-Type": "application/json",

@@ -27,7 +27,7 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
         intent = "unknown"
         parameters = {}
 
-        # 🆕 VERIFICAR RESET MANUAL (palabra "hola")
+        # VERIFICAR RESET MANUAL (palabra "hola")
         if mensaje.lower().strip() in ["hola", "hello", "hi"]:
             print("🔄 Reinicio manual detectado")
             conversation_memory._reset_conversation_state(numero_telefono)
@@ -42,14 +42,14 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
         if conversation_context is None:
             conversation_context = conversation_memory.get_conversation_context(numero_telefono)
 
-        # 🆕 MANEJO ESPECIAL SEGÚN ESTADO
+        # MANEJO ESPECIAL SEGÚN ESTADO
         documentos_guardados = None
         if conversation_state and not conversation_state.get('should_search_full_db', True):
             documentos_guardados = conversation_memory.get_conversation_documents(numero_telefono)
             
             print(f"📚 Documentos guardados disponibles: {len(documentos_guardados)}")
 
-        # 🆕 DETECCIÓN DE INTENCIÓN CON ESTADO
+        # DETECCIÓN DE INTENCIÓN CON ESTADO
         intent_data = detectar_intencion_con_contexto(
             mensaje, 
             numero_telefono,
@@ -68,7 +68,7 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
         intent = intent_data.get("intent", "unknown")
         parametro = intent_data.get("parametro")
         
-        # 🔥 CORRECCIÓN CRÍTICA: Diferenciar entre selección de notificación y búsqueda normal
+        #  Diferenciar entre selección de notificación y búsqueda normal
         if conversation_state.get('state') == 'awaiting_choice':
             source_intent = None
             if documentos_guardados:
@@ -86,16 +86,13 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
                 
                 if resultado:
                     return resultado
-            # 🔥 VERIFICAR SI ESTAMOS EN FLUJO DE NOTIFICACIONES
+            #  VERIFICAR SI ESTAMOS EN FLUJO DE NOTIFICACIONES
             es_flujo_notificacion = conversation_state.get('is_notification_flow', False)
             
             if es_flujo_notificacion:
-                # 🔥 FLUJO DE NOTIFICACIONES: Usar procesar_notificacion_seleccionada
-                print("🔔 Flujo de notificación detectado - usando handler específico")
                 return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
             else:
-                # 🔵 FLUJO DE BÚSQUEDA NORMAL: Usar formateo estándar
-                print("📋 Flujo de búsqueda normal - usando formateo estándar")
+                #  Usar formateo estándar
                 lista_documentos = intent_data.get("resultados")
                 documento_seleccionado = intent_data.get("documento_seleccionado")
 
@@ -108,12 +105,8 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
                     "parameters": None,
                     "resultados": lista_documentos
                 }
-        
-        print(f"🎯 Intent detectado: {intent}")
-        print(f"📋 Parámetro: {parametro}")
-        print(f"🔍 Buscar en filtrado: {parameters.get('search_in_filtered', False)}")
 
-        # 🆕 PROCESAR SEGÚN INTENT Y ESTADO
+        # PROCESAR SEGÚN INTENT Y ESTADO
         if intent == "saludo":
             respuesta = respuesta_saludo_contextual(conversation_context)
             tipo_resultado = "saludo"
@@ -138,7 +131,7 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
         elif intent == "seleccionar_documento":
             # Usuario está seleccionando de una lista
             if documentos_guardados:
-                # 🆕 NUEVO: Verificar si viene de notificación
+                #Verificar si viene de notificación
                 source_intent = documentos_guardados[0].get('source_intent') if documentos_guardados else None
                 print(f"🔍 Source intent detectado: {source_intent}")
                 
@@ -365,7 +358,7 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
                 tipo_resultado = "error"
         
         elif intent == "seleccionar_notificacion":
-            # 🔥 SIEMPRE usar el handler específico de notificaciones
+            #  SIEMPRE usar el handler específico de notificaciones
             return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
 
         elif intent == "error_seleccion_notificacion":
@@ -516,7 +509,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
     return mensaje
 
 
-#ESTE ES EL NUEVO MÉTODO PARA PROCESAR LA SELECCIÓN DE NOTIFICACIÓN
+#PROCESAR LA SELECCIÓN DE NOTIFICACIÓN
 def procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data):
     """Procesa selección de notificación con formato detallado mejorado"""
     try:
@@ -553,9 +546,7 @@ def procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data):
         # Marcar como vista
         notification_manager.mark_notification_as_viewed(numero_telefono, notification["id"])
         
-        # ============================
-        # EXTRAER DATOS DEL PAYLOAD
-        # ============================
+     
         payload = notification.get('payload', {})
         documento = payload.get('documento', {})
         proyecto = payload.get('proyecto', {})
@@ -696,7 +687,6 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     try:
         if tipo_contacto == "responsable":
             # Buscar en responsables
-            print("🔍 Buscando responsable...")
             responsables = None
             
             # Intentar diferentes estructuras
@@ -717,7 +707,6 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
                 
         else:
             # Buscar en encargados (comportamiento original)
-            print("🔍 Buscando encargado...")
             encargados = None
             
             # Intentar diferentes estructuras
@@ -737,7 +726,6 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
                 raise KeyError("No hay encargados en la lista")
 
     except Exception as e:
-        print(f"⚠️ No se pudo obtener {etiqueta_contacto}: {e}")
         celular = "+51972453786"
         nombre = "Usuario de Prueba"
     
@@ -784,8 +772,8 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     return {
         'mensaje': mensaje,
         'url_whatsapp': url_whatsapp,
-        'encargado': nombre,  # Mantener por compatibilidad
-        'responsable': nombre,  # Agregar para responsable
+        'encargado': nombre,  
+        'responsable': nombre,  
         'celular': celular
     }
 
@@ -845,8 +833,7 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
                 ultimo_doc = conv_context['recent_documents'][0]
                 print(f"📋 Último documento mencionado: {ultimo_doc}")
                 
-                # Aquí podrías hacer una consulta a la base de datos para obtener info del documento
-                # documento_info = consultar_documento_por_codigo(ultimo_doc)
+        
         
         # PROCESAR INFORMACIÓN ENCONTRADA
         if alert_payload:
@@ -1089,7 +1076,6 @@ Luego podrás solicitar el contacto del {etiqueta_contacto}.
 """
 # ========================= FUNCIONES DE WHATSAPP =========================
 def enviar_mensaje_whatsapp(numero_telefono, mensaje):
-    """Envía un mensaje por WhatsApp - VERSIÓN MEJORADA CON MEJOR ERROR HANDLING"""
     try:
         # Validar que el mensaje no esté vacío
         if not mensaje or mensaje.strip() == "":
@@ -1143,7 +1129,6 @@ def numero_autorizado(numero_telefono):
     if numero_limpio.startswith('51'):
         numero_limpio = numero_limpio[2:]
     
-    # 📞 USAR SOLO 'celular' - ESA COLUMNA SÍ EXISTE EN TU BD
     query = """
         SELECT id, nombres, apellido_paterno, nivel_acceso
         FROM usuarios 
@@ -1156,7 +1141,7 @@ def numero_autorizado(numero_telefono):
     resultado = ejecutar_query(query, (parametro_busqueda,))
     
     if resultado and len(resultado) > 0:
-        return resultado[0]  # Devuelve dict con info del usuario
+        return resultado[0]  
     return None
 
 #FUNCIÓN DE REGISTRO DE INTENTOS NO AUTORIZADOS

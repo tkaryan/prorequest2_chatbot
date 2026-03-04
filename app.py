@@ -39,7 +39,6 @@ def whatsapp_webhook():
         # Procesar mensaje entrante
         try:
             data = request.get_json()
-        #    print("📥 Webhook data:", json.dumps(data, indent=2))
             
             # Verificar si hay mensajes entrantes
             if not (data.get('entry') and len(data['entry']) > 0 
@@ -50,7 +49,7 @@ def whatsapp_webhook():
             changes = data['entry'][0]['changes'][0]
             value = changes.get('value', {})
             
-            # 🆕 MANEJAR RESPUESTAS DE BOTÓN Y TEXTO
+            # MANEJAR RESPUESTAS DE BOTÓN Y TEXTO
             if 'messages' in value:
                 message = value['messages'][0]
                 numero_telefono = message['from']
@@ -66,9 +65,7 @@ def whatsapp_webhook():
                 elif tipo == 'text':
                     message_text = message.get('text', {}).get('body', '').lower().strip()
 
-                print(f"🔘 Procesando mensaje tipo: {tipo}")
-                print(f"   Payload: {button_payload}")
-                print(f"   Texto: {message_text}")
+      
                 
                 # Verificar autorización
                 usuario = numero_autorizado(numero_telefono)
@@ -86,7 +83,7 @@ def whatsapp_webhook():
                         enviar_mensaje_whatsapp(numero_telefono, mensaje_contacto)
                     return jsonify({'status': 'unauthorized'}), 403
 
-                # 🆕 MAPEO DE TIPOS DE REVISIÓN (botones y texto)
+                # MAPEO DE TIPOS DE REVISIÓN (botones y texto)
                 TIPOS_REVISION = {
                     # Payloads de botones
                     "revisar_sin_respuesta": "sin_respuesta",
@@ -102,12 +99,11 @@ def whatsapp_webhook():
                     "inactivos": "inactivos",
                     "revisar stand by": "stand_by",
                     "stand by": "stand_by",
-                    # 🔥 NUEVOS: Textos equivalentes - SINGULAR (como aparecen en el chat)
-                    "revisar sin respuesta": "sin_respuesta",  # Ya está arriba
-                    "revisar sin firma": "sin_firma",  # Ya está arriba
-                    "revisar inactivo": "inactivos",  # SINGULAR
-                    "inactivo": "inactivos",  # SINGULAR
-                    "revisar stand by": "stand_by"  # Ya está arriba
+                    "revisar sin respuesta": "sin_respuesta",  
+                    "revisar sin firma": "sin_firma",  
+                    "revisar inactivo": "inactivos",  
+                    "inactivo": "inactivos",  
+                    "revisar stand by": "stand_by"  
                 }
 
                 # Detectar tipo de revisión solicitada
@@ -120,7 +116,6 @@ def whatsapp_webhook():
                 elif message_text in TIPOS_REVISION:
                     tipo_revision = TIPOS_REVISION[message_text]
 
-                # 🔥 MANEJAR REVISIÓN POR TIPO ESPECÍFICO
                 if tipo_revision:
                     print(f"🔍 Revisión solicitada para tipo: {tipo_revision}")
                     
@@ -139,7 +134,7 @@ def whatsapp_webhook():
                         
                         print(f"📄 Mostrando lista de {len(documentos)} documentos tipo {tipo_revision}")
                         
-                        # 🔥 USAR formatear_lista_documentos - FORMATO DETALLADO CORRECTO
+                        #  USAR formatear_lista_documentos
                         respuesta = formatear_lista_documentos(documentos)
                         
                         enviar_mensaje_whatsapp(numero_telefono, respuesta)
@@ -198,7 +193,7 @@ def whatsapp_webhook():
                     return jsonify({'status': 'success'}), 200
 
                 
-                # 🔥 SI NO ES REVISIÓN, PROCESAR COMO MENSAJE NORMAL
+                #  SI NO ES REVISIÓN, PROCESAR COMO MENSAJE NORMAL
                 if tipo == 'text':
                     texto_mensaje = message_text
                     print(f"📱 Mensaje de texto recibido: {texto_mensaje}")
@@ -499,7 +494,6 @@ def formatear_mensaje_whatsapp_consolidado(documentos, nombre_usuario, tipo):
     
     if tipo == 'documento_no_atendido':
         # Para este tipo, usamos plantilla de WhatsApp Business
-        # No retornamos mensaje de texto sino None para indicar que se usa plantilla
         return None
     
     # Para otros tipos, formatea el mensaje normal
@@ -559,7 +553,7 @@ def recibir_notificacion():
         }
 
         
-        # 🔥 AGRUPAR DOCUMENTOS POR DESTINATARIO
+        #  AGRUPAR DOCUMENTOS POR DESTINATARIO
         documentos_por_usuario = defaultdict(list)
         
         for doc_data in documentos:
@@ -574,7 +568,7 @@ def recibir_notificacion():
                     print(f"⚠️ Número no autorizado: {telefono_normalizado}")
         
         
-        # 🔥 ENVIAR NOTIFICACIÓN AGRUPADA A CADA USUARIO
+        #  ENVIAR NOTIFICACIÓN AGRUPADA A CADA USUARIO
         resultados = {
             'exitosos': 0,
             'fallidos': 0,
@@ -589,7 +583,7 @@ def recibir_notificacion():
                 
                 print(f"📱 Procesando notificación para {telefono} ({cantidad_docs} docs)")
                 
-                # 🔥 ALMACENAR NOTIFICACIONES EN MEMORIA
+                #  ALMACENAR NOTIFICACIONES EN MEMORIA
                 notification_data = {
                     "tipo": tipo,
                     "cantidad": cantidad_docs,
@@ -616,7 +610,7 @@ def recibir_notificacion():
                     })
                     continue
                 
-                # 🔥 ENVIAR PLANTILLA DE WHATSAPP
+                #  ENVIAR PLANTILLA DE WHATSAPP
                 config = plantillas_config[tipo]
                 
           

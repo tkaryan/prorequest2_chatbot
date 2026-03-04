@@ -297,9 +297,9 @@ def convertir_formato_gemini(gemini_result: Dict[str, Any]) -> Dict[str, Any]:
         parametro = parameters.get("document_id")
     elif intent == "confirmar_seleccion":
         parametro = None
-    # 🆕 NUEVO: Manejar selección de notificaciones
+    # Manejar selección de notificaciones
     elif intent == "seleccionar_notificacion":
-        parametro = parameters.get("notification_index")  # ¡ESTO ESTABA FALTANDO!
+        parametro = parameters.get("notification_index") 
     elif intent == "error_seleccion_notificacion":
         parametro = parameters.get("notification_index")
     
@@ -321,7 +321,7 @@ def convertir_formato_gemini(gemini_result: Dict[str, Any]) -> Dict[str, Any]:
     if parameters.get("posicion_lista"):
         result["posicion_lista"] = parameters["posicion_lista"]
     
-    # 🆕 NUEVO: Mantener parámetros específicos de notificaciones
+    #  Mantener parámetros específicos de notificaciones
     if parameters.get("notification_index"):
         result["notification_index"] = parameters["notification_index"]
     
