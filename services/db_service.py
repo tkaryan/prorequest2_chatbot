@@ -1,7 +1,12 @@
 import mysql.connector
 import re
 import os
+from dotenv import load_dotenv       
 from mysql.connector import Error
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+
 
 DB_CONFIG = {
     'host': os.getenv("DB_HOST", ""),

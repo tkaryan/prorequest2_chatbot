@@ -1,6 +1,6 @@
 # Ignorar entorno virtual
 myvenv/
-
+venv/
 # Archivos de Python que no deberían ir al repo
 __pycache__/
 *.pyc
