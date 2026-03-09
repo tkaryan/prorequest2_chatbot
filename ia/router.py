@@ -53,6 +53,16 @@ ENTRADA DEL USUARIO: "{mensaje}"
 
 1. ESTADO "INITIAL":
    - Evalúa cualquier búsqueda o petición de notificación.
+    - "documentos sin respuesta" → listar_sin_respuesta
+    - "ver sin firma" → listar_sin_firma
+    - "documentos inactivos" → listar_inactivos
+    - "ver stand by" → listar_stand_by
+    - "seguimiento PR-123" → seguimiento_por_codigo
+    - "buscar cartas" → buscar_documentos
+    - "hola" → saludo
+    - "mis notificaciones" → listar_notificaciones
+    - "contactar" → contactar_encargado
+    - "contactar al responsable" → contactar_responsable
    - Si detecta una búsqueda o notificación, el 'next_state' sugerido debe ser "SEARCH_RESULTS" o "NOTIFICATION_LIST".
 
 2. ESTADO "AWAITING_SELECTION" o "NOTIFICATION_SELECTION":

@@ -448,6 +448,56 @@ class NotificationManager:
             print(f"❌ Error marcando notificación: {e}")
             return False
     
+
+    def limpiar_notificaciones_antiguas(self):
+        """Limpia notificaciones más antiguas de 1 hora"""
+        try:
+            current_time = datetime.now()
+            for numero_telefono in list(notification_manager.pending_notifications.keys()):
+                notifications = notification_manager.pending_notifications[numero_telefono]
+                # Filtrar notificaciones más nuevas de 1 hora
+                fresh_notifications = [
+                    n for n in notifications 
+                    if current_time - n['timestamp'] < timedelta(hours=1)
+                ]
+                
+                if len(fresh_notifications) != len(notifications):
+                    print(f"🧹 Limpiadas {len(notifications) - len(fresh_notifications)} notificaciones antiguas para {numero_telefono}")
+                    if fresh_notifications:
+                        notification_manager.pending_notifications[numero_telefono] = fresh_notifications
+                    else:
+                        del notification_manager.pending_notifications[numero_telefono]
+                        
+        except Exception as e:
+            print(f"❌ Error limpiando notificaciones antiguas: {e}")
+
+# ── Métodos faltantes — agregar a NotificationManager ────────────────────
+
+    def get_all_documents_by_type(self, phone_number: str, tipo_interno: str) -> list:
+        """
+        Aplana todos los documentos de un tipo en una lista plana.
+        Usado como fallback en chatbot_service cuando conversation_memory está vacío.
+        """
+        self._init_user(phone_number)
+        documentos = []
+        for group in self.user_notifications[phone_number].get(tipo_interno, []):
+            documentos.extend(group.get("documentos", []))
+        print(f"📦 {len(documentos)} docs consolidados [{tipo_interno}] para {phone_number}")
+        return documentos
+
+    def _identificar_tipo(self, tipo_backend: str) -> str:
+        """Alias público de _identificar_tipo_notificacion (compatibilidad)."""
+        return self._identificar_tipo_notificacion(tipo_backend)
+
+    def _init_user(self, phone_number: str) -> None:
+        """Inicializa estructura del usuario si no existe."""
+        if phone_number not in self.user_notifications:
+            self.user_notifications[phone_number] = {
+                "sin_respuesta": [],
+                "sin_firma": [],
+                "inactivos": [],
+                "stand_by": [],
+            }
   
 
 

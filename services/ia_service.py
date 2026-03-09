@@ -29,7 +29,6 @@ def detectar_intencion_local_mejorado(texto_usuario):
     """Detección local mejorada como fallback"""
     texto = texto_usuario.lower().strip()
     
-    # Patrones mejorados
     patrones = {
         "saludo": r'\b(hola|buenos días|buenas tardes|buenas noches|saludos|hey)\b',
         "contactar_encargado": r'\b(contactar|contacto|escribir|hablar|mensaje|encargado|responsable)\b',
@@ -43,14 +42,11 @@ def detectar_intencion_local_mejorado(texto_usuario):
     
     for intent, patron in patrones.items():
         if re.search(patron, texto):
-            # Extraer parámetro básico
             parametro = extraer_parametro_basico(texto, intent)
             return {"intent": intent, "parametro": parametro}
     
-    # Por defecto, conversación general
     return {"intent": "conversacion_general", "parametro": texto_usuario}
 
-#Funciones de detección de intención con IA
 def convertir_resultado(resultado):
     """Convierte el formato de  al formato esperado por tu código actual"""
     intent = resultado.get("intent")
@@ -97,22 +93,18 @@ def detectar_intencion_optimizado(texto_usuario, numero_telefono="unknown"):
 def detectar_intencion_con_contexto(texto_usuario, numero_telefono, context=None, conversation_state=None):
     """Versión mejorada que integra estados de conversación y selección de notificaciones"""
     try:
-        # 🆕 NUEVO: Verificar si estamos esperando selección de notificación
         if conversation_state and conversation_state.get('state') == 'awaiting_notification_choice':
             print("🔔 Procesando selección de notificación")
             
             try:
-                # Intentar extraer número de la respuesta
                 import re
                 numeros = re.findall(r'\d+', texto_usuario)
                 if numeros:
                     index_selected = int(numeros[0])
                     
-                    # Obtener la notificación seleccionada
                     notification = notification_manager.get_notification_by_index(numero_telefono, index_selected)
                     
                     if notification:
-                        # Marcar como vista
                         notification_manager.mark_notification_as_viewed(numero_telefono, notification["id"])
                         
                         return {
@@ -130,7 +122,6 @@ def detectar_intencion_con_contexto(texto_usuario, numero_telefono, context=None
             except Exception as e:
                 print(f"❌ Error procesando selección de notificación: {e}")
         
-        # Construir información de contexto (tu código original)
         context_info = ""
         alert_context = ""
         state_context = ""
@@ -627,7 +618,6 @@ Responde SOLO JSON válido:
                     print("❌ Gemini devolvió respuesta vacía")
                     return None
                     
-                # Limpiar formato de código si existe
                 if content.startswith("```"):
                     content = content.strip("`")
                     if content.lower().startswith("json"):
