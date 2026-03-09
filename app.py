@@ -19,7 +19,7 @@ import json
 import requests
 from typing import List, Dict, Union, Optional
 app = Flask(__name__)
-
+_processed_message_ids: set = set()
 
 @app.route('/whatsapp/webhook', methods=['GET', 'POST'])
 def whatsapp_webhook():
@@ -53,6 +53,17 @@ def whatsapp_webhook():
             # MANEJAR RESPUESTAS DE BOTÓN Y TEXTO
             if 'messages' in value:
                 message = value['messages'][0]
+
+                message_id = message.get('id', '')
+                if message_id and message_id in _processed_message_ids:
+                    print(f"⚠️ Webhook duplicado ignorado: {message_id}")
+                    return jsonify({'status': 'duplicate'}), 200
+                if message_id:
+                    _processed_message_ids.add(message_id)
+                    # Limpiar cache si crece demasiado
+                    if len(_processed_message_ids) > 1000:
+                        _processed_message_ids.clear()
+
                 numero_telefono = message['from']
                 tipo = message.get('type')
 
@@ -126,9 +137,13 @@ def whatsapp_webhook():
                         tipo_revision
                     )
                     
-              
+                    # 🔍 DEBUG - ver qué hay en memoria
+                    todos = notification_manager.user_notifications.get(numero_telefono, {})
+                    print(f"📊 Estado notification_manager para {numero_telefono}:")
+                    for t, lista in todos.items():
+                        print(f"   [{t}]: {len(lista)} grupos")
+                    print(f"   → Solicitado [{tipo_revision}]: {len(notifications)} notificaciones")
                     
-                    # Si hay una sola notificación, mostrar documentos directamente
                     if len(notifications) > 0:
                         notification = notifications[0]
                         documentos = notification.get('documentos', [])
@@ -299,8 +314,21 @@ def whatsapp_webhook():
                                 context=conv_context,
                                 message_type=message_type
                             )
+
+
+                            if intent in ["seleccionar_notificacion", "error_seleccion_notificacion"]:
+                                conversation_memory.set_conversation_state(
+                                    numero_telefono,
+                                    "awaiting_notification_choice",
+                                    {
+                                        "notifications_available": True,
+                                        "is_notification_flow": True,
+                                        "has_notification_list": True
+                                    }
+                                )
+                                print(f"🔔 Estado awaiting_notification_choice preservado tras add_turn")
                             
-                            # 🧠 GUARDAR DOCUMENTOS SI EXISTEN
+                            
                             if 'resultados' in respuesta_completa or intent == "confirmar_seleccion":
                                 success = conversation_memory.set_conversation_documents(
                                     phone_number=numero_telefono,
@@ -312,7 +340,6 @@ def whatsapp_webhook():
                                 if success:
                                     print(f"📚 {len(respuesta_completa['resultados'])} documentos guardados en memoria")
                             
-                            # 🧠 MANEJO DE PREGUNTAS DE CONFIRMACIÓN
                             if message_type == "eleccion":
                                 pregunta_confirmacion = "¿En cuál de los documentos requieres información?\n\n" \
                                                       "Si quieres iniciar una nueva búsqueda, escribe 'Hola'"

@@ -38,7 +38,7 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
                 "parameters": {"reset_triggered": True}
             }
 
-        # 🧠 Obtener contexto si no se proporcionó
+        # Obtener contexto si no se proporcionó
         if conversation_context is None:
             conversation_context = conversation_memory.get_conversation_context(numero_telefono)
 
@@ -363,11 +363,12 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
 
         elif intent == "error_seleccion_notificacion":
             parametro = intent_data.get("parametro")
+            error_msg = intent_data.get("error") or f"❌ No encontré '{parametro}' en la lista.\n\nIntenta con el número (1, 2, 3...) o el código del documento."
             return {
-                "tipo": "error",
-                "respuesta": f"❌ Número {parametro} no válido. Por favor, selecciona un número de la lista de notificaciones mostrada anteriormente.",
+                "tipo": "error_notificacion",
+                "respuesta": error_msg,
                 "intent": intent,
-                "parameters": {}
+                "parameters": {"parametro": parametro}
             }
 
         else:
@@ -653,8 +654,17 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
             flow="detalle_notificacion"
         )
         
-        # Resetear estado después de mostrar
-        conversation_memory.set_conversation_state(numero_telefono, "initial")
+    
+        conversation_memory.set_conversation_state(
+            numero_telefono,
+            "awaiting_notification_choice",
+            {
+                "notifications_available": True,
+                "has_notification_list": True,
+                "is_notification_flow": True,
+                "last_viewed_notification": notification.get("id")
+            }
+        )
         
         return {
             "tipo": "notificacion_seleccionada",
@@ -778,84 +788,75 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     }
 
 def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="encargado"):
-    """Maneja el contacto con el encargado o responsable - VERSION CORREGIDA"""
+    """Maneja el contacto con el encargado o responsable"""
     try:
         print(f"🔍 Buscando información de contacto ({tipo_contacto}) para {numero_telefono}")
-        print(f"📊 Contexto recibido: {conv_context}")
-        
-        # Buscar información de alerta o documento en múltiples fuentes
+
         alert_payload = None
         documento_info = None
-        
-        # 1. BUSCAR EN TURNOS RECIENTES (método original)
+
+        # 1. BUSCAR EN TURNOS RECIENTES
         if hasattr(conversation_memory, 'conversations') and numero_telefono in conversation_memory.conversations:
-            print("🔍 Buscando en historial de conversación...")
-            for i, turn in enumerate(reversed(conversation_memory.conversations[numero_telefono])):
-                ctx = turn.context if isinstance(turn.context, dict) else {}
-                print(f"  Turno {i}: Intent={turn.intent}, Context_keys={list(ctx.keys())}")
-                
-                # Buscar alerta activa
-                if ctx.get('alert_active'):
+            ultimos = conversation_memory.conversations[numero_telefono][-5:]
+            for i, turno in enumerate(reversed(ultimos)):  # más reciente primero
+                ctx = turno.context if isinstance(turno.context, dict) else {}
+                print(f"  Turno -{i+1}: intent={turno.intent} | alert_active={ctx.get('alert_active')} | tiene_payload={bool(ctx.get('alert_payload'))}")
+
+                # Alerta activa con payload
+                if ctx.get('alert_active') and ctx.get('alert_payload'):
                     alert_payload = ctx.get('alert_payload')
-                    print(f"✅ Alerta encontrada en turno {i}")
+                    print(f"✅ alert_payload encontrado en turno -{i+1}")
                     break
-                
-                # Buscar información de documento
-                if ctx.get('document_info') or turn.intent in ['seleccionar_notificacion', 'seguimiento_por_codigo']:
-                    documento_info = ctx.get('document_info') or turn.parameters
-                    print(f"📄 Documento encontrado en turno {i}: {documento_info}")
-                    
-                # Si es selección de notificación, obtener datos del parámetro
-                if turn.intent == 'seleccionar_notificacion':
-                    if turn.parameters:
-                        documento_info = turn.parameters
-                        print(f"📋 Info de notificación: {documento_info}")
+
+                # Turno de notificación seleccionada
+                if turno.intent == 'notification_selected':
+                    params = turno.parameters if isinstance(turno.parameters, dict) else {}
+                    notification = params.get('selected_notification', {})
+                    if notification:
+                        alert_payload = notification.get('payload', {})
+                        print(f"✅ payload extraído de notification_selected en turno -{i+1}")
                         break
-        
+
+                # Turno de seguimiento con info de documento
+                if turno.intent in ['seleccionar_notificacion', 'seguimiento_por_codigo', 'seguimiento_por_numero_documento']:
+                    params = turno.parameters if isinstance(turno.parameters, dict) else {}
+                    if params:
+                        documento_info = params
+                        print(f"📄 documento_info encontrado en turno -{i+1}: {turno.intent}")
+                        break
+
         # 2. BUSCAR EN DOCUMENTOS GUARDADOS
         if not alert_payload and not documento_info:
             print("🔍 Buscando en documentos guardados...")
             documentos_guardados = conversation_memory.get_conversation_documents(numero_telefono, limit=5)
-            
+
             if documentos_guardados:
-                # Tomar el documento más reciente que tenga información de contacto
                 for doc in documentos_guardados:
-                    if doc.get('usuario_asignado') or doc.get('encargado') or doc.get('responsable'):
+                    encargados = doc.get('encargados', [])
+                    responsables = doc.get('responsables', [])
+                    if encargados or responsables or doc.get('usuario_asignado'):
                         documento_info = doc
                         print(f"📚 Documento con contacto encontrado: {doc.get('codigo_sistema', 'N/A')}")
                         break
-        
-        # 3. BUSCAR EN CONTEXTO CONVERSACIONAL
-        if not alert_payload and not documento_info:
-            print("🔍 Buscando en contexto conversacional...")
-            if conv_context.get('recent_documents'):
-                # Intentar obtener información del último documento mencionado
-                ultimo_doc = conv_context['recent_documents'][0]
-                print(f"📋 Último documento mencionado: {ultimo_doc}")
-                
-        
-        
-        # PROCESAR INFORMACIÓN ENCONTRADA
+
+        # PROCESAR
         if alert_payload:
             print("✅ Procesando alert_payload")
             return procesar_alert_payload(alert_payload, numero_telefono, tipo_contacto)
-            
+
         elif documento_info:
-            print("✅ Procesando documento_info") 
+            print("✅ Procesando documento_info")
             return procesar_documento_info(documento_info, numero_telefono, tipo_contacto)
-            
+
         else:
-            # No se encontró información
             print("❌ No se encontró información de contacto")
             return generar_respuesta_sin_info_contacto(conv_context, tipo_contacto)
-            
+
     except Exception as e:
         print(f"❌ Error manejando contacto: {e}")
         import traceback
         traceback.print_exc()
         return "❌ Error interno al generar el contacto. Por favor, inténtalo de nuevo."
-
-
 def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="encargado"):
     """Procesa información de documento para generar contacto con formato WhatsApp"""
     try:

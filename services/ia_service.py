@@ -8,7 +8,6 @@ from services.algolia_service import *
 from utils.formatter import *
 from services.notificacion_services import *
 
-#Funciones para manejo sin inteligencia artificial
 def extraer_parametro_basico(texto, intent):
     """Extrae parámetros básicos según el intent"""
     if intent == "seguimiento_por_numero_documento":
@@ -57,7 +56,6 @@ def convertir_resultado(resultado):
     intent = resultado.get("intent")
     parameters = resultado.get("parameters", {})
     
-    # Determinar el parámetro principal basado en la intención
     parametro = None
     consulta = None
     
@@ -73,7 +71,6 @@ def convertir_resultado(resultado):
         parametro = parameters.get("consulta")
         consulta = parametro
     
-    # Formato compatible con tu código actual
     result = {"intent": intent}
     
     if parametro:
@@ -81,7 +78,6 @@ def convertir_resultado(resultado):
     if consulta:
         result["consulta"] = consulta
     
-    # 🧠 NUEVO: Mantener flags de contexto
     if parameters.get("is_follow_up"):
         result["is_follow_up"] = True
     if parameters.get("context_reference"):
@@ -89,14 +85,12 @@ def convertir_resultado(resultado):
     
     return result
 
-def detectar_intencion_optimizado(texto_usuario):
+def detectar_intencion_optimizado(texto_usuario, numero_telefono="unknown"):
     """Función original mantenida para compatibilidad"""
-    # Primero intentar con Gemini
-    result_gemini = detectar_intencion_con_contexto(texto_usuario)
+    result_gemini = detectar_intencion_con_contexto(texto_usuario, numero_telefono)
     if result_gemini:
         return convertir_resultado(result_gemini)
     
-    # Fallback local optimizado
     print("🔄 Usando detección local como fallback...")
     return detectar_intencion_local_mejorado(texto_usuario)
 
@@ -159,7 +153,6 @@ def detectar_intencion_con_contexto(texto_usuario, numero_telefono, context=None
             if context.get("last_parameters"):
                 context_info += f"- Últimos parámetros: {context['last_parameters']}\n"
         
-        # 🆕 NUEVO: Información de estado de conversación
         if conversation_state:
             state_context = f"""
 🔄 ESTADO DE CONVERSACIÓN:
@@ -171,7 +164,6 @@ def detectar_intencion_con_contexto(texto_usuario, numero_telefono, context=None
 - ¿Esperando selección notificación?: {conversation_state.get('state') == 'awaiting_notification_choice'}
 """
         
-        # 🆕 NUEVO: Contexto de alerta activa  
         if context and context.get("alert_active"):
             alert_context = f"""
 🚨 ALERTA ACTIVA DETECTADA:
@@ -376,7 +368,6 @@ def consultar_ia_con_memoria(consulta, context=None, conversation_state=None):
         if context and context.get("last_intent"):
             contexto_adicional += f"\nÚltima consulta fue sobre: {context['last_intent']}"
         
-        # 🆕 NUEVO: Información de estado
         if conversation_state:
             estado = conversation_state.get('state', 'initial')
             estado_info = f"""
@@ -513,7 +504,6 @@ def seleccionar_respuesta(texto_usuario, context=None, documentos=None, conversa
             if context.get("recent_documents"):
                 context_info += f"- Documentos mencionados: {', '.join(context['recent_documents'][:3])}\n"
 
-        # 🆕 NUEVO: Información de estado
         if conversation_state:
             state_info = f"""
 🔄 ESTADO CONVERSACIÓN: {conversation_state.get('state', 'unknown')}
@@ -647,7 +637,6 @@ Responde SOLO JSON válido:
                 if "documentos_encontrados" not in intent_data:
                     intent_data["documentos_encontrados"] = {}
 
-                # guardamos los docs encontrados
                 intent_data["documentos_encontrados"] = documentos
                 print(f"✅ Selección procesada: {intent_data.get('intent')} - encontrados: {len(intent_data.get('documentos_encontrados', []))}")
                 return intent_data

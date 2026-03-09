@@ -17,8 +17,6 @@ SUGERENCIAS_BUSQUEDA = (
     "¿En qué puedo ayudarte?"
 )
 
-
-
 SALUDOS = {
     "hola", "holi", "holis", "holaaa", "holaaaa", "holis!", "holiwis",
     "buenas", "buenos dias", "buenas tardes", "buenas noches",

@@ -13,7 +13,7 @@ class ConversationTurn:
     intent: str
     parameters: Dict[str, Any]
     context: Dict[str, Any]
-    message_type: str = None  # "verificacion", "eleccion", "consulta"
+    message_type: str = None 
     flow: str = None
     
 
@@ -27,7 +27,6 @@ class ConversationMemory:
         self.document_cache: Dict[str, List[Dict]] = {}
         self.max_documents_cache = max_documents_cache
         
-        # Estados de conversación
         self.conversation_states: Dict[str, Dict[str, Any]] = {}
         
     def add_turn(self, phone_number: str, user_message: str, bot_response: str, 
@@ -55,7 +54,6 @@ class ConversationMemory:
             if len(self.conversations[phone_number]) > self.max_turns:
                 self.conversations[phone_number] = self.conversations[phone_number][-self.max_turns:]
             
-            # Actualizar estado según message_type, flow y resultados
             self._update_conversation_state(phone_number, message_type, parameters, flow)
             
         except Exception as e:
@@ -66,27 +64,24 @@ class ConversationMemory:
         """Actualiza el estado de la conversación basado en el flujo mejorado"""
         if phone_number not in self.conversation_states:
             self.conversation_states[phone_number] = {
-                "state": "initial",  # initial, awaiting_choice, awaiting_verification, filtered_search
+                "state": "initial",  
                 "state_timestamp": time.time(),
                 "has_document_list": False,
                 "last_search_results_count": 0,
-                "current_flow": None,  #  Rastrea el flow actual
-                "flow_history": []     # Historial de flows recientes
+                "current_flow": None, 
+                "flow_history": []     
             }
         
         state_info = self.conversation_states[phone_number]
         current_time = time.time()
         
-        # Verificar si debe resetear por timeout (1 hora = 3600 segundos)
         if current_time - state_info["state_timestamp"] >= 3600:
             self._reset_conversation_state(phone_number)
             return
         
-        # ACTUALIZAR FLOW ACTUAL Y HISTORIAL
         if flow:
             state_info["current_flow"] = flow
             
-            # Añadir al historial de flows
             flow_history = state_info.get("flow_history", [])
             flow_history.append({
                 "flow": flow,
@@ -94,7 +89,6 @@ class ConversationMemory:
                 "message_type": message_type
             })
             
-            # Mantener solo los últimos 5 flows
             if len(flow_history) > 5:
                 flow_history = flow_history[-5:]
             
@@ -102,13 +96,11 @@ class ConversationMemory:
             
             print(f"🔄 Flow actualizado a: {flow} para {phone_number}")
         
-        # Actualizar estado según message_type y flow
         if message_type == "consulta":
             state_info["state"] = "initial"
             state_info["state_timestamp"] = current_time
             
         elif message_type == "eleccion" or flow == "lista":
-            # Se devolvió una lista de documentos para elegir
             state_info["state"] = "awaiting_choice"
             state_info["has_document_list"] = True
             state_info["state_timestamp"] = current_time
@@ -118,25 +110,20 @@ class ConversationMemory:
             print(f"🔄 Estado: awaiting_choice (lista) para {phone_number}")
             
         elif message_type == "verificacion" or flow == "detalle":
-            # Se devolvió un documento específico para verificar
             state_info["state"] = "awaiting_verification"
             state_info["state_timestamp"] = current_time
             
             print(f"🔄 Estado: awaiting_verification (detalle) para {phone_number}")
         
         elif flow == "confirmacion":
-            # Usuario está respondiendo una confirmación
             state_info["current_flow"] = "confirmacion"
-            # El estado específico depende de lo que esté confirmando
             
-        # Actualizar timestamp en cualquier caso
         state_info["state_timestamp"] = current_time
 
     def _reset_conversation_state(self, phone_number: str):
         """Resetea el estado de conversación y limpia documentos"""
         print(f"🔄 Reseteando estado de conversación para {phone_number}")
         
-        # Resetear estado
         self.conversation_states[phone_number] = {
             "state": "initial",
             "state_timestamp": time.time(),
@@ -146,7 +133,6 @@ class ConversationMemory:
             "flow_history": []
         }
         
-        # Limpiar cache de documentos
         if phone_number in self.document_cache:
             del self.document_cache[phone_number]
 
@@ -155,39 +141,31 @@ class ConversationMemory:
         Determina si debe buscar en toda la base de datos o en la lista filtrada
         Ahora considera el flow actual
         """
-        # Verificar si el usuario escribió "hola" (reset manual)
         if user_message and user_message.lower().strip() in ["hola", "hello", "hi"]:
             self._reset_conversation_state(phone_number)
             return True
         
-        # Si no existe estado, buscar en base completa
         if phone_number not in self.conversation_states:
             return True
             
         state_info = self.conversation_states[phone_number]
         current_time = time.time()
         
-        # Verificar timeout de 1 hora
         if current_time - state_info["state_timestamp"] >= 3600:
             self._reset_conversation_state(phone_number)
             return True
         
-        #  LÓGICA MEJORADA CON FLOW
         current_flow = state_info.get("current_flow")
         
-        # Si está en flow de lista, usar documentos guardados
         if current_flow == "lista" and state_info.get("has_document_list", False):
             return False
             
-        # Si está en flow de detalle después de una lista, mantener filtrado
         if current_flow == "detalle" and self.was_last_flow(phone_number, "lista"):
             return False
         
-        # Si está en estado inicial o no tiene lista de documentos, buscar en base completa
         if state_info["state"] == "initial" or not state_info["has_document_list"]:
             return True
             
-        # Si está esperando elección o verificación, o en búsqueda filtrada, usar lista
         if state_info["state"] in ["awaiting_choice", "awaiting_verification", "filtered_search"]:
             return False
             
@@ -279,7 +257,7 @@ class ConversationMemory:
             "should_search_full_db": self.should_search_full_database(phone_number),
             "last_search_results_count": state_info["last_search_results_count"],
             "time_since_last_activity": time_since_activity,
-            "will_timeout_soon": time_since_activity > 3300,  # Aviso a los 55 minutos
+            "will_timeout_soon": time_since_activity > 3300,  
             "current_flow": state_info.get("current_flow"),    
             "flow_history": state_info.get("flow_history", [])  
         }
@@ -311,14 +289,12 @@ class ConversationMemory:
                 "session_length": len(history),
                 "last_successful_search": None,
                 "nivel_acceso": None,
-                # Estados de conversación integrados
                 "conversation_state": conversation_state["state"],
                 "has_document_list": conversation_state["has_document_list"],
                 "should_search_full_db": conversation_state["should_search_full_db"],
                 "awaiting_confirmation": conversation_state["state"] in ["awaiting_choice", "awaiting_verification"],
                 "confirmation_type": "choice" if conversation_state["state"] == "awaiting_choice" else "verification" if conversation_state["state"] == "awaiting_verification" else None,
                 "pending_results": [],
-                #Información de flow
                 "current_flow": conversation_state["current_flow"],
                 "flow_history": conversation_state["flow_history"],
                 "is_in_lista_flow": conversation_state["current_flow"] == "lista",
@@ -330,12 +306,10 @@ class ConversationMemory:
             if not history:
                 return context
 
-            # Último intent y parámetros
             last_turn = history[-1]
             context["last_intent"] = last_turn.intent
             context["last_parameters"] = last_turn.parameters
 
-            # Analizar turnos recientes para extraer contexto
             for i, turn in enumerate(history):
                 context["conversation_flow"].append({
                     "intent": turn.intent,
@@ -347,13 +321,11 @@ class ConversationMemory:
 
                 params = turn.parameters or {}
 
-                # Documentos mencionados
                 if params.get("document_id"):
                     context["recent_documents"].append(params["document_id"])
                 if params.get("parametro") and turn.intent.startswith("seguimiento_por"):
                     context["recent_documents"].append(params["parametro"])
 
-                # Proyectos, usuarios, búsquedas...
                 if params.get("proyecto"):
                     context["recent_projects"].append(params["proyecto"])
                 if params.get("usuario"):
@@ -363,11 +335,9 @@ class ConversationMemory:
                     if search_term:
                         context["recent_searches"].append(search_term)
 
-                # Obtener nivel de acceso de turnos del sistema
                 if turn.intent == "system_set_role":
                     context["nivel_acceso"] = params.get("nivel_acceso")
 
-            # Eliminar duplicados
             context["recent_documents"] = list(dict.fromkeys(context["recent_documents"]))[:5]
             context["recent_projects"] = list(dict.fromkeys(context["recent_projects"]))[:3]
             context["recent_users"] = list(dict.fromkeys(context["recent_users"]))[:3]
@@ -435,7 +405,6 @@ class ConversationMemory:
         
         if not self.conversations[phone_number]:
             del self.conversations[phone_number]
-            # También limpiar estado si no hay conversación
             if phone_number in self.conversation_states:
                 del self.conversation_states[phone_number]
     
@@ -449,11 +418,9 @@ class ConversationMemory:
                 print("⚠️ No hay documentos válidos para almacenar")
                 return False
                 
-            # Inicializar cache si no existe
             if phone_number not in self.document_cache:
                 self.document_cache[phone_number] = []
                 
-            # Agregar metadatos a cada documento
             enriched_documents = []
             for doc in documents:
                 if isinstance(doc, dict):
@@ -466,10 +433,8 @@ class ConversationMemory:
                     })
                     enriched_documents.append(enriched_doc)
             
-            # Agregar documentos al cache (al inicio para mantener los más recientes)
             self.document_cache[phone_number] = enriched_documents + self.document_cache[phone_number]
             
-            # Limitar tamaño del cache
             if len(self.document_cache[phone_number]) > self.max_documents_cache:
                 self.document_cache[phone_number] = self.document_cache[phone_number][:self.max_documents_cache]
             
@@ -491,7 +456,6 @@ class ConversationMemory:
                 
             documents = self.document_cache[phone_number].copy()
             
-            # Aplicar filtros si se especifican
             if filter_by:
                 filtered_docs = []
                 for doc in documents:
@@ -504,7 +468,6 @@ class ConversationMemory:
                         filtered_docs.append(doc)
                 documents = filtered_docs
             
-            # Aplicar límite
             if limit and limit > 0:
                 documents = documents[:limit]
                 
@@ -515,7 +478,6 @@ class ConversationMemory:
             print(f"❌ Error obteniendo documentos: {e}")
             return []
 
-    # Agregar método a ConversationMemory para manejar estados de notificaciones
     def set_conversation_state(self, phone_number: str, state: str, additional_info: dict = None):
         """Establece el estado de conversación"""
         if phone_number not in self.conversation_states:

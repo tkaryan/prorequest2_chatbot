@@ -7,7 +7,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from core.conversationMemory import ConversationMemory
 from services.notificacion_services import notification_manager
-# Instancia global de memoria
 conversation_memory = ConversationMemory()
 
 def detectar_intencion_con_contexto(texto_usuario: str, phone_number: str, conversation_context=None, conversation_state=None) -> Dict[str, Any]:
@@ -15,17 +14,14 @@ def detectar_intencion_con_contexto(texto_usuario: str, phone_number: str, conve
     Sistema principal de detección de intención con estados de conversación
     Compatible con llamadas desde procesar_mensaje con parámetros adicionales
     """
-    # Si no se proporcionan, obtener estado y contexto de la conversación
     if conversation_state is None:
         conversation_state = conversation_memory.get_conversation_state(phone_number)
     if conversation_context is None:
         conversation_context = conversation_memory.get_conversation_context(phone_number)
     
-    # Obtener documentos guardados
     documentos_guardados = conversation_memory.get_conversation_documents(phone_number)
     
 
-    # 🔄 RESET MANUAL - Verificar "hola"
     if texto_usuario.lower().strip() in ["hola", "hello", "hi"]:
         print("🔄 Reset manual detectado en flow.py")
         conversation_memory._reset_conversation_state(phone_number)
@@ -36,66 +32,60 @@ def detectar_intencion_con_contexto(texto_usuario: str, phone_number: str, conve
             "estado": "normal"
         }
     
-    # 🎯 DETECCIÓN SEGÚN ESTADO DE CONVERSACIÓN
-    if conversation_state['state'] == "awaiting_notification_choice":
-        print("🔍 Procesando en modo awaiting_notification_choice")
-        
-        # Usar IA mejorada
-        from services.ia_service import detectar_intencion_con_contexto
-        
-        intent_data = detectar_intencion_con_contexto(
-            texto_usuario,
-            phone_number,
-            conversation_context,
-            conversation_state
-        )
-        
-        if intent_data and intent_data.get("intent") == "seleccionar_notificacion":
-            notification_index = intent_data.get("parameters", {}).get("notification_index")
-            
-            if notification_index:
-                # Obtener la notificación seleccionada
-                notification = notification_manager.get_notification_by_index(phone_number, notification_index)
-                
-                if notification:
-                    return {
-                        "intent": "seleccionar_notificacion",
-                        "parametro": notification_index,
-                        "notification_data": notification,
-                        "estado": "normal"
-                    }
-                else:
-                    return {
-                        "intent": "error_seleccion_notificacion",
-                        "parametro": notification_index,
-                        "error": "No encontré esa notificación. Intenta con otro número o código.",
-                        "estado": "normal"
-                    }
-        
-        # Si no es selección de notificación, procesar como intent normal
-        elif intent_data:
-            result = convertir_formato_gemini(intent_data)
-            result["estado"] = "normal"
-            return result
-        
-        # Fallback manual
-        return procesar_awaiting_notification_choice_fallback(texto_usuario, phone_number)
-    # 1. ESTADO: awaiting_choice (esperando elección de lista)
+    if conversation_state and conversation_state.get('state') == 'awaiting_notification_choice':
+        print("🔔 Estado: awaiting_notification_choice")
+
+        texto_lower = texto_usuario.lower().strip()
+
+        INTENTS_PASS_THROUGH = [
+            "contactar", "contactar encargado", "contactar responsable",
+            "hablar con", "comunicarme", "mensaje", "encargado", "responsable",
+            "si", "sí", "no", "hola", "hello", "hi"
+        ]
+
+        es_intent_especial = any(palabra in texto_lower for palabra in INTENTS_PASS_THROUGH)
+
+        if es_intent_especial:
+            print(f"🔀 Intent especial detectado en awaiting_notification_choice: '{texto_lower}' → pasando a flujo normal")
+            return procesar_initial_state(texto_usuario, conversation_context)
+
+        query_usuario = texto_usuario.strip()
+        notification = notification_manager.get_notification_by_index(phone_number, query_usuario)
+
+        if notification:
+            return {
+                "intent": "seleccionar_notificacion",
+                "parametro": query_usuario,
+                "notification_data": notification,
+                "estado": "normal"
+            }
+        else:
+            return {
+                "intent": "error_seleccion_notificacion",
+                "parametro": query_usuario,
+                "error": (
+                    f"No encontré ninguna notificación para '{query_usuario}'.\n"
+                    "Intenta con:\n"
+                    "• El *número* de la lista: 1, 2, 3...\n"
+                    "• El *código*: ej. PR-001640, 10922-MEP\n"
+                    "• Parte del *asunto*: ej. 'hospital', 'valorización'\n"
+                    "• Nombre del *encargado*: ej. 'Renzo', 'Ferreyra'"
+                ),
+                "estado": "normal"
+            }
+    
     if conversation_state['state'] == "awaiting_choice":
         print("🔍 Procesando en modo awaiting_choice")
         return procesar_awaiting_choice(texto_usuario, conversation_context, documentos_guardados, phone_number)
     
-    # 2. ESTADO: awaiting_verification (esperando confirmación)
     elif conversation_state['state'] == "awaiting_verification":
         print("🔍 Procesando en modo awaiting_verification")
         return procesar_awaiting_verification(texto_usuario, conversation_context)
     
-    # 3. ESTADO: filtered_search (búsqueda en lista guardada)
     elif conversation_state['state'] == "filtered_search":
         print("🔍 Procesando en modo filtered_search")
         return procesar_filtered_search(texto_usuario, conversation_context, documentos_guardados)
     
-    # 4. ESTADO: initial (estado normal)
     else:
         print("🔍 Procesando en modo initial")
         return procesar_initial_state(texto_usuario, conversation_context)
@@ -106,7 +96,6 @@ def procesar_awaiting_choice(texto_usuario: str, context: Dict[str, Any], docume
     try:
         from services.ia_service import seleccionar_respuesta
         
-        # Llamar a función de selección mejorada
         result = seleccionar_respuesta(
             texto_usuario, 
             context, 
@@ -117,7 +106,6 @@ def procesar_awaiting_choice(texto_usuario: str, context: Dict[str, Any], docume
             intent = result.get("intent", "select_document")
             parameters = result.get("parameters", {})
             
-            # Determinar si es confirmación o selección
             if intent == "confirmar_seleccion":
                 return {
                     "intent": "confirmar_seleccion",
@@ -126,7 +114,6 @@ def procesar_awaiting_choice(texto_usuario: str, context: Dict[str, Any], docume
                     "estado": "normal"
                 }
             
-            # Selección de documento específico
             elif intent == "select_document":
                 docs_encontrados = result.get("documentos_encontrados")
                 
@@ -147,11 +134,9 @@ def procesar_awaiting_choice(texto_usuario: str, context: Dict[str, Any], docume
                         "estado": "normal"
                     }
                 
-            # Nueva consulta mientras está en selección
             elif parameters.get("nueva_consulta"):
                 return procesar_nueva_consulta_en_seleccion(texto_usuario, context)
         
-        # Fallback si no se pudo procesar la selección
         return {
             "intent": "error_seleccion",
             "parametro": None,
@@ -250,7 +235,8 @@ def procesar_initial_state(texto_usuario: str, context: Dict[str, Any]) -> Dict[
     # Fallback: detección básica
     try:
         from services.ia_service import detectar_intencion_optimizado
-        result = detectar_intencion_optimizado(texto_usuario)
+        phone = context.get("phone_number", "unknown")
+        result = detectar_intencion_optimizado(texto_usuario, numero_telefono=phone)
         result["estado"] = "normal"
         print(f"✅ Detección básica: {result.get('intent', 'unknown')}")
         return result

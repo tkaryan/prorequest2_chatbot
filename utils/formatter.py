@@ -256,35 +256,3 @@ def obtener_info_encargado(documento):
         print(f"❌ Error obteniendo info encargado: {e}")
         return None
 
-
-def formatear_alerta(documento):
-    """Formatea una alerta de documento por vencer - CORREGIDA"""
-    dias_restantes = documento.get('dias_restantes', 0)
-        
-        # Obtener información del encargado
-    encargado_info = obtener_info_encargado(documento)
-    nombre_encargado = encargado_info['nombre_completo'] if encargado_info else "No asignado"
-        
-
-        
-        # Manejar fecha límite (puede ser string o datetime)
-    fecha_limite = documento.get('fecha_limite', 'N/A')
-    if isinstance(fecha_limite, str) and fecha_limite != 'N/A':
-            fecha_formateada = fecha_limite
-    elif hasattr(fecha_limite, 'strftime'):
-            fecha_formateada = fecha_limite.strftime('%d/%m/%Y')
-    else:
-            fecha_formateada = 'N/A'
-        
-    return f"""
-     {dias_restantes} días restantes
-    📄 *Documento:* {documento.get('numero_documento', 'N/A')}
-    📋 *Asunto:* {documento.get('asunto', 'N/A')[:60]}...
-    🏗️ *Proyecto:* {documento.get('proyecto_nombre', 'No asignado')}
-    👤 *Encargado:* {nombre_encargado}
-    📅 *Vence:* {fecha_formateada}
-    🔄 *Estado:* {documento.get('estado_flujo', 'N/A')}
-
-    💡 *¿Quieres contactar a {nombre_encargado.split()[0] if nombre_encargado != 'No asignado' else 'el responsable'}?*
-    """
-
