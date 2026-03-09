@@ -24,7 +24,7 @@ DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent"
 
 
 # Configuración WhatsApp

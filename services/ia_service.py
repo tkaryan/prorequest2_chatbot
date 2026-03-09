@@ -85,274 +85,7 @@ def convertir_resultado(resultado):
     
     return result
 
-def detectar_intencion_optimizado(texto_usuario, numero_telefono="unknown"):
-    """Función original mantenida para compatibilidad"""
-    result_gemini = detectar_intencion_con_contexto(texto_usuario, numero_telefono)
-    if result_gemini:
-        return convertir_resultado(result_gemini)
-    
-    print("🔄 Usando detección local como fallback...")
-    return detectar_intencion_local_mejorado(texto_usuario)
 
-def detectar_intencion_con_contexto(texto_usuario, numero_telefono, context=None, conversation_state=None):
-    """Versión mejorada que integra estados de conversación y selección de notificaciones"""
-    try:
-        # 🆕 NUEVO: Verificar si estamos esperando selección de notificación
-        if conversation_state and conversation_state.get('state') == 'awaiting_notification_choice':
-            print("🔔 Procesando selección de notificación")
-            
-            try:
-                # Intentar extraer número de la respuesta
-                import re
-                numeros = re.findall(r'\d+', texto_usuario)
-                if numeros:
-                    index_selected = int(numeros[0])
-                    
-                    # Obtener la notificación seleccionada
-                    notification = notification_manager.get_notification_by_index(numero_telefono, index_selected)
-                    
-                    if notification:
-                        # Marcar como vista
-                        notification_manager.mark_notification_as_viewed(numero_telefono, notification["id"])
-                        
-                        return {
-                            "intent": "seleccionar_notificacion",
-                            "parametro": index_selected,
-                            "notification_data": notification,
-                            "confidence": 0.95
-                        }
-                    else:
-                        return {
-                            "intent": "error_seleccion_notificacion",
-                            "parametro": index_selected,
-                            "confidence": 0.90
-                        }
-            except Exception as e:
-                print(f"❌ Error procesando selección de notificación: {e}")
-        
-        # Construir información de contexto (tu código original)
-        context_info = ""
-        alert_context = ""
-        state_context = ""
-        
-        if context and context.get("is_follow_up"):
-            context_info += f"\n🧠 CONTEXTO CONVERSACIONAL ACTIVO:\n"
-            
-            if context.get("last_intent"):
-                context_info += f"- Última intención: {context['last_intent']}\n"
-            
-            if context.get("recent_documents"):
-                context_info += f"- Documentos mencionados: {', '.join(context['recent_documents'][:3])}\n"
-                
-            if context.get("recent_projects"):
-                context_info += f"- Proyectos mencionados: {', '.join(context['recent_projects'][:2])}\n"
-                
-            if context.get("recent_users"):
-                context_info += f"- Usuarios mencionados: {', '.join(context['recent_users'][:2])}\n"
-
-            if context.get("last_parameters"):
-                context_info += f"- Últimos parámetros: {context['last_parameters']}\n"
-        
-        if conversation_state:
-            state_context = f"""
-🔄 ESTADO DE CONVERSACIÓN:
-- Estado actual: {conversation_state.get('state', 'initial')}
-- ¿Esperando confirmación?: {conversation_state.get('awaiting_confirmation', False)}
-- Tipo confirmación: {conversation_state.get('confirmation_type', 'N/A')}
-- ¿Tiene lista documentos?: {conversation_state.get('has_document_list', False)}
-- ¿Debe buscar BD completa?: {conversation_state.get('should_search_full_db', True)}
-- ¿Esperando selección notificación?: {conversation_state.get('state') == 'awaiting_notification_choice'}
-"""
-        
-        if context and context.get("alert_active"):
-            alert_context = f"""
-🚨 ALERTA ACTIVA DETECTADA:
-- Documento: {context.get('document_number', 'N/A')}
-- Hay información de encargado disponible para contacto
-- El usuario puede querer contactar al responsable
-"""
-
-        prompt = f"""
-Eres un clasificador de intenciones para sistema de documentos CON MEMORIA CONVERSACIONAL Y ESTADOS AVANZADOS incluyendo NOTIFICACIONES. 
-
-ENTRADA: "{texto_usuario}"
-
-INTENCIONES DISPONIBLES:
-- "saludo": Saludos básicos o palabra "hola" (siempre resetea estado)
-- "seguimiento_por_numero_documento": Pedir seguimiento/historial de documento. Puede ser solo un número/código o combinados, además si indico número documento es ese.
-- "seguimiento_por_codigo": Buscar por código interno formato "PR-001226".
-- "seguimiento_por_proyecto": Documentos de un proyecto específico.
-- "seguimiento_por_asunto": Búsqueda por asunto o contenido largo.
-- "seguimiento_por_usuario": Documentos asignados a un usuario.
-- "seguimiento_por_consecutivo": Buscar por código de antamina. La palabra clave es "seguimiento". El formato del código es siempre un número, te daré los ejemplos:'1229', '1218-2025-OXI', 'Carta N° 1225-2025-OXI','1268-2025-OXI'.
-- "buscar_documentos": Consulta directa de documentos (palabra clave: "buscar") - ejemplo: Si la entrada contiene "buscar", "búsqueda" o "búsqueda avanzada" deberías optar por este intent. NO AFECTA ESTADOS
-- "contactar_encargado": El usuario quiere contactar al ENCARGADO del documento. Usar cuando solo se menciona "contactar" sin especificar rol - NO AFECTA ESTADOS
-- "contactar_responsable": El usuario quiere contactar al RESPONSABLE del documento. Usar cuando específicamente menciona "responsable" - NO AFECTA ESTADOS
-- "conversacion_general": Chat general o ayuda
-- "despedida": Despedidas
-- "confirmar_seleccion": Usuario responde a pregunta de confirmación (sí/no)
-- "seleccionar_documento": Usuario selecciona de una lista mostrada anteriormente
-- "seleccionar_notificacion": Usuario selecciona una notificación por número (1,2,3...) - NUEVO
-
-🎯 REGLAS PARA NOTIFICACIONES:
-- Si dice "mis notificaciones" SIN especificar tipo → "listar_notificaciones_todas"
-- Si especifica "sin respuesta" → "listar_sin_respuesta"
-- Si especifica "sin firma" → "listar_sin_firma"
-- Si especifica "inactivos" → "listar_inactivos"
-- Si especifica "stand by" → "listar_stand_by"
-
-🆕 NUEVOS INTENTS PARA NOTIFICACIONES POR TIPO:
-- "listar_notificaciones_todas": Ver resumen de TODAS las notificaciones
-  Ejemplos: "mis notificaciones", "ver notificaciones", "qué notificaciones tengo"
-  
-- "listar_sin_respuesta": Ver documentos SIN RESPUESTA específicamente
-  Ejemplos: "documentos sin respuesta", "ver sin respuesta", "mostrar pendientes de respuesta"
-  
-- "listar_sin_firma": Ver documentos SIN FIRMA específicamente
-  Ejemplos: "documentos sin firma", "ver sin firmar", "pendientes de firma"
-  
-- "listar_inactivos": Ver documentos INACTIVOS específicamente
-  Ejemplos: "documentos inactivos", "ver inactivos", "documentos sin movimiento"
-  
-- "listar_stand_by": Ver documentos en STAND BY específicamente
-  Ejemplos: "documentos en stand by", "ver stand by", "documentos pausados"
-
-🧠 CONTEXTO CONVERSACIONAL:
-{context_info}
-
-{state_context}
-
-{alert_context}
-
-⚠️ REGLAS ESPECIALES PARA ESTADOS:
-
-🔔 ESTADO "awaiting_notification_choice" (esperando selección de notificación):
-- Si usuario dice número (1, 2, 3...) → "seleccionar_notificacion"
-- Si usuario dice algo diferente → procesar como intent normal pero mantener estado
-
-🔄 ESTADO "awaiting_choice" (esperando elección de lista):
-- Si usuario dice número (1, 2, 3...) → "seleccionar_documento"
-- Si usuario dice código/nombre documento → "seleccionar_documento" 
-- Si usuario dice "sí/no" → "confirmar_seleccion"
-- Si usuario hace nueva búsqueda → mantener intent original PERO marcar "search_in_filtered": true
-
-🔄 ESTADO "awaiting_verification" (esperando verificación):
-- Si usuario dice "sí/si/correcto/exacto" → "confirmar_seleccion" con confirmacion_positiva: true
-- Si usuario dice "no/incorrecto/otro" → "confirmar_seleccion" con confirmacion_positiva: false
-- Si hace nueva consulta → intent original
-
-🔄 ESTADO "initial" (estado normal):
-- Búsqueda normal en toda la base de datos
-- "contactar_encargado", "contactar_responsable" y "buscar_documentos" no cambian estado
-- Si dice "hola" debe volver al estado initial
-
-⚠️ REGLAS CONTEXTUALES:
-- Si dice "también", "y este", "el anterior", "ese documento" → usar contexto previo
-- Si menciona "más información" o "detalles" → mantener misma intención
-- Para referencias como "este proyecto", "ese documento" → usar entidad del contexto
-- Si solo dice conectores ("y", "también") → mantener último intent
-- Si hay alerta activa y responde afirmativamente → "contactar_encargado" (por defecto)
-- Si dice "mis notificaciones", "ver notificaciones", "alertas" → "listar_notificaciones"
-
-🎯 REGLAS PARA CONTACTO:
-- Si dice "contactar" SIN especificar → "contactar_encargado"
-- Si dice "contactar al encargado" → "contactar_encargado"
-- Si dice "contactar al responsable" → "contactar_responsable"
-- Si dice "hablar con el responsable" → "contactar_responsable"
-- Si dice "comunicarme con el responsable" → "contactar_responsable"
-
-EJEMPLOS SEGÚN ESTADO:
-
-Estado "initial":
-- "mis notificaciones" → listar_notificaciones_todas
-- "documentos sin respuesta" → listar_sin_respuesta
-- "ver sin firma" → listar_sin_firma
-- "documentos inactivos" → listar_inactivos
-- "ver stand by" → listar_stand_by
-- "seguimiento PR-123" → seguimiento_por_codigo
-- "buscar cartas" → buscar_documentos
-- "hola" → saludo
-- "mis notificaciones" → listar_notificaciones
-- "contactar" → contactar_encargado
-- "contactar al responsable" → contactar_responsable
-
-Estado "awaiting_notification_choice":
-- "1" → seleccionar_notificacion (index: 1)
-- "2" → seleccionar_notificacion (index: 2)
-- "ver documento 3" → seleccionar_notificacion (index: 3)
-- "sin respuesta" → listar_sin_respuesta (cambio de tipo)
-
-
-Estado "awaiting_choice":
-- "1" → seleccionar_documento (posicion: 1)
-- "PR-123" → seleccionar_documento (buscar código)
-- "sí" → confirmar_seleccion (positiva)
-- "no" → confirmar_seleccion (negativa)
-
-Responde SOLO JSON válido:
-{{
-    "intent": "nombre_intencion",
-    "parameters": {{
-        "document_id": "codigo_extraido",
-        "usuario": "nombre_usuario",
-        "proyecto": "nombre_proyecto", 
-        "estado": "estado_extraido",
-        "consulta": "texto_busqueda", 
-        "posicion_lista": numero_si_selecciona_por_posicion,
-        "notification_type": "sin_respuesta|sin_firma|inactivos|stand_by",
-        "notification_index": numero_si_selecciona_notificacion,
-        "confirmacion_positiva": true/false (solo si es confirmar_seleccion),
-        "is_follow_up": true/false,
-        "context_reference": true/false,
-        "search_in_filtered": true/false,
-        "wants_contact": true/false
-    }},
-    "confidence": 0.95,
-    "state_action": "maintain/reset/transition" 
-}}
-"""
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-goog-api-key": GEMINI_API_KEY
-        }
-        
-        data = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 600,
-                "responseMimeType": "application/json"
-            }
-        }
-        
-        response = requests.post(GEMINI_URL, headers=headers, json=data, timeout=60)
-        
-        if response.status_code == 200:
-            result = response.json()
-            try:
-                content = result["candidates"][0]["content"]["parts"][0]["text"]
-                print("CONTENT DE RESULTADOS", content)
-                intent_data = json.loads(content)
-                print(f"✅ Gemini con estados: {intent_data.get('intent')} - {intent_data.get('confidence', 'N/A')}")
-                print(f"📋 Parámetros: {intent_data.get('parameters', {})}")
-                print(f"🔄 Acción estado: {intent_data.get('state_action', 'maintain')}")
-                return intent_data
-            except Exception as e:
-                print("❌ Gemini JSON inválido:", e, content)
-                return None
-        else:
-            print(f"❌ Gemini HTTP {response.status_code}: {response.text}")
-            return None
-    except Exception as e:
-        print(f"❌ Error Gemini: {e}")
-        return None
 
 def consultar_ia_con_memoria(consulta, context=None, conversation_state=None):
     """Versión mejorada que considera contexto y estados de conversación"""
@@ -656,3 +389,149 @@ Responde SOLO JSON válido:
 
 
 
+
+def seleccionar_de_lista(texto_usuario: str, resumen: list) -> dict | None:
+    """
+    Resuelve qué documento de la lista quiso decir el usuario.
+
+    Args:
+        texto_usuario: lo que escribió el usuario
+        resumen: lista de dicts con keys: idx, codigo, numero, asunto, encargado
+
+    Returns:
+        {"idx": N} con posición 1-based, o None si no se pudo resolver
+    """
+    # ── Capa 1: Python puro ───────────────────────────────────────────────────
+    resultado_local = _seleccionar_localmente(texto_usuario, resumen)
+    if resultado_local:
+        print(f"✅ seleccionar_de_lista (local): idx={resultado_local['idx']}")
+        return resultado_local
+
+    # ── Capa 2: Gemini ────────────────────────────────────────────────────────
+    resultado_gemini = _seleccionar_con_gemini(texto_usuario, resumen)
+    if resultado_gemini:
+        print(f"✅ seleccionar_de_lista (Gemini): idx={resultado_gemini['idx']}")
+        return resultado_gemini
+
+    print(f"⚠️  seleccionar_de_lista: no se pudo resolver '{texto_usuario}'")
+    return None
+
+
+def _seleccionar_localmente(texto: str, resumen: list) -> dict | None:
+    """
+    Intenta resolver la selección sin IA.
+    Cubre: número de posición, código exacto/parcial, substring asunto.
+    """
+    texto_lower = texto.lower().strip()
+
+    # Número de posición puro ("1", "2", ...)
+    if re.match(r'^\s*\d+\s*$', texto):
+        idx = int(texto.strip())
+        if 1 <= idx <= len(resumen):
+            return {"idx": idx}
+
+    # Ordinal textual
+    ordinales = {
+        "primero": 1, "primera": 1,
+        "segundo": 2, "segunda": 2,
+        "tercero": 3, "tercera": 3,
+        "cuarto":  4, "cuarta":  4,
+        "quinto":  5, "quinta":  5,
+    }
+    for palabra, idx in ordinales.items():
+        if palabra in texto_lower and idx <= len(resumen):
+            return {"idx": idx}
+
+    # Código o número de documento — buscar en codigo y numero
+    tokens = re.findall(r'[A-Z0-9][\w-]*\d[\w-]*', texto, re.IGNORECASE)
+    for token in tokens:
+        token_upper = token.upper()
+        matches = [
+            doc for doc in resumen
+            if token_upper in str(doc.get("codigo") or "").upper()
+            or token_upper in str(doc.get("numero") or "").upper()
+        ]
+        if len(matches) == 1:
+            return {"idx": matches[0]["idx"]}
+        if len(matches) > 1:
+            # Intentar match exacto
+            exactos = [
+                d for d in matches
+                if token_upper == str(d.get("numero") or "").upper()
+                or token_upper == str(d.get("codigo") or "").upper()
+            ]
+            if len(exactos) == 1:
+                return {"idx": exactos[0]["idx"]}
+            # Ambiguo — dejar a Gemini
+            return None
+
+    # Substring del asunto (solo si texto tiene más de 3 chars)
+    if len(texto_lower) > 3:
+        matches_asunto = [
+            doc for doc in resumen
+            if texto_lower in str(doc.get("asunto") or "").lower()
+        ]
+        if len(matches_asunto) == 1:
+            return {"idx": matches_asunto[0]["idx"]}
+
+    # Nombre de encargado
+    if len(texto_lower) > 2:
+        matches_enc = [
+            doc for doc in resumen
+            if texto_lower in str(doc.get("encargado") or "").lower()
+        ]
+        if len(matches_enc) == 1:
+            return {"idx": matches_enc[0]["idx"]}
+
+    return None
+
+
+def _seleccionar_con_gemini(texto_usuario: str, resumen: list) -> dict | None:
+    """
+    Fallback: Gemini resuelve selecciones ambiguas o en lenguaje natural.
+    Solo se llama si la detección local no encontró nada.
+    Prompt mínimo para reducir tokens.
+    """
+    try:
+        prompt = f"""
+El usuario quiere seleccionar un documento de esta lista escribiendo: "{texto_usuario}"
+
+LISTA (máx 20):
+{json.dumps(resumen[:20], ensure_ascii=False)}
+
+Identifica cuál documento corresponde.
+El usuario pudo escribir: número de posición, código parcial, parte del asunto, nombre del encargado.
+
+Responde SOLO JSON:
+{{"encontrado": true/false, "idx": <número 1-based o null>}}
+"""
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": GEMINI_API_KEY
+        }
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 100,
+                "responseMimeType": "application/json"
+            }
+        }
+
+        response = requests.post(GEMINI_URL, headers=headers, json=data, timeout=15)
+
+        if response.status_code == 200:
+            content = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+            resultado = json.loads(content)
+            print(f"🤖 Gemini selección: {resultado}")
+
+            if resultado.get("encontrado") and resultado.get("idx") is not None:
+                idx = int(resultado["idx"])
+                if 1 <= idx <= len(resumen):
+                    return {"idx": idx}
+
+        return None
+
+    except Exception as e:
+        print(f"❌ Error Gemini en seleccionar_de_lista: {e}")
+        return None

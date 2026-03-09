@@ -10,27 +10,17 @@ from utils.formatter import *
 from services.ia_service import seleccionar_respuesta, consultar_ia_con_memoria
 from services.notificacion_services import *
 from datetime import datetime, timedelta
+from core.states import State
 
 #app = Flask(__name__)
+
 
 def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversation_context=None, intent_forzado=None):
     """Procesa mensaje con estados de conversación integrados"""
     try:
-        print(f"\n{'='*60}")
-        print(f"📱 Procesando mensaje de {numero_telefono}")
-        print(f"💬 Mensaje: {mensaje}")
-        print(f"🔄 Estado actual: {conversation_state.get('state', 'initial') if conversation_state else 'initial'}")
-        print(f"🔍 Buscar BD completa: {conversation_state.get('should_search_full_db', True) if conversation_state else True}")
-
-        respuesta = ""
-        tipo_resultado = "consulta"
-        intent = "unknown"
-        parameters = {}
-
-        # VERIFICAR RESET MANUAL (palabra "hola")
         if mensaje.lower().strip() in ["hola", "hello", "hi"]:
             print("🔄 Reinicio manual detectado")
-            conversation_memory._reset_conversation_state(numero_telefono)
+            conversation_memory._reset(numero_telefono)
             return {
                 "tipo": "saludo",
                 "respuesta": respuesta_saludo(),
@@ -38,402 +28,333 @@ def procesar_mensaje(mensaje, numero_telefono, conversation_state=None, conversa
                 "parameters": {"reset_triggered": True}
             }
 
-        # Obtener contexto si no se proporcionó
         if conversation_context is None:
             conversation_context = conversation_memory.get_conversation_context(numero_telefono)
 
-        # MANEJO ESPECIAL SEGÚN ESTADO
-        documentos_guardados = None
-        if conversation_state and not conversation_state.get('should_search_full_db', True):
-            documentos_guardados = conversation_memory.get_conversation_documents(numero_telefono)
+        documentos_guardados = conversation_memory.get_conversation_documents(numero_telefono)
+
+        source_data = []
+
+        if documentos_guardados:
+            source_data = documentos_guardados
+            print(f"📚 Usando {len(documentos_guardados)} documentos del contexto actual.")
+        else:
+            print("🔍 Sin documentos en contexto. Buscando en notification_manager...")
             
+            # ✅ Leer tipo_interno desde el estado guardado
+            raw_state = conversation_memory._get_or_create_state(numero_telefono)
+            tipo_interno = raw_state.get("pending_notification_tipo", "inactivos")
+            
+            docs_from_notif = notification_manager.get_all_documents_by_type(
+                numero_telefono, tipo_interno
+            )
+            
+            if docs_from_notif:
+                # Re-cachear en conversation_memory para este turno
+                conversation_memory.set_conversation_documents(
+                    phone_number=numero_telefono,
+                    documents=docs_from_notif,
+                    source_intent=f"notificacion_{tipo_interno}",
+                    source_query="Recuperado desde notification_manager"
+                )
+                source_data = docs_from_notif
+                documentos_guardados = docs_from_notif
+                print(f"📚 {len(docs_from_notif)} docs recuperados desde notification_manager [{tipo_interno}]")
+            else:
+                source_data = []
+                print(f"⚠️ Sin docs en notification_manager para tipo '{tipo_interno}'")
+                
+        should_filter = (
+            conversation_state
+            and not conversation_state.get('should_search_full_db', True)
+            and documentos_guardados
+        )
+
+        if should_filter:
             print(f"📚 Documentos guardados disponibles: {len(documentos_guardados)}")
 
-        # DETECCIÓN DE INTENCIÓN CON ESTADO
         intent_data = detectar_intencion_con_contexto(
-            mensaje, 
-            numero_telefono,
-            conversation_context, 
-            conversation_state
+            mensaje, numero_telefono, conversation_context, conversation_state
         )
-        
         if not intent_data:
-            return {
-                "tipo": "error",
-                "respuesta": "❌ No pude procesar tu mensaje. Intenta de nuevo.",
-                "intent": "error",
-                "parameters": {}
-            }
+            return _error_response("❌ No pude procesar tu mensaje. Intenta de nuevo.")
 
-        intent = intent_data.get("intent", "unknown")
+        intent    = intent_data.get("intent", "unknown")
         parametro = intent_data.get("parametro")
-        
-        #  Diferenciar entre selección de notificación y búsqueda normal
-        if conversation_state.get('state') == 'awaiting_choice':
-            source_intent = None
-            if documentos_guardados:
-                # Obtener source_intent del primer documento
-                source_intent = documentos_guardados[0].get('source_intent')
+        respuesta = ""
+        tipo_resultado = "consulta"
+        parameters = {}
+
+        # Debug prints
+        print(f"DEBUG: intent = {intent}")
+        print(f"DEBUG: parametro = {parametro}")
+        print(f"DEBUG: respuesta = {respuesta}")
+        print(f"DEBUG: tipo_resultado = {tipo_resultado}")
+        print(f"DEBUG: parameters = {parameters}")
+
+
+
+        if conversation_state and conversation_state.get('state') == State.AWAITING_SELECTION:
             
-            if source_intent == 'notificacion_plantilla':
-                # Es selección de notificación - usar formato detallado
-                resultado = procesar_notificacion_seleccionada(
-                    mensaje, 
-                    numero_telefono, 
-                    intent_data, 
-                    
-                )
-                
-                if resultado:
-                    return resultado
-            #  VERIFICAR SI ESTAMOS EN FLUJO DE NOTIFICACIONES
-            es_flujo_notificacion = conversation_state.get('is_notification_flow', False)
+            # ✅ Dejar pasar errores de selección al handler correcto
+            if intent in ("error_seleccion_lista", "error_seleccion_notificacion", "saludo"):
+                pass  # continúa al if/elif chain de abajo
             
-            if es_flujo_notificacion:
-                return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
             else:
-                #  Usar formateo estándar
-                lista_documentos = intent_data.get("resultados")
+                source_intent = (documentos_guardados[0].get('source_intent') if documentos_guardados else None)
+                es_flujo_notificacion = (
+                    source_intent and source_intent.startswith('notificacion_')
+                    or conversation_state.get('is_notification_flow', False)
+                )
+
+                if es_flujo_notificacion:
+                    return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
+
                 documento_seleccionado = intent_data.get("documento_seleccionado")
-
-                respuesta = formatear_seguimiento(documento_seleccionado)
-            
+                if not documento_seleccionado:
+                    # No hubo match — devolver el error que ya construyó el FSM
+                    return {
+                        "tipo": "error_seleccion",
+                        "respuesta": intent_data.get("error", "❌ No encontré ese documento en la lista."),
+                        "intent": "error_seleccion_lista",
+                        "parameters": {}
+                    }
+                
+                formato = formatear_seguimiento(documento_seleccionado)
                 return {
-                    "tipo": intent,
-                    "respuesta": respuesta,
-                    "intent": intent,
+                    "tipo":       intent,
+                    "respuesta":  formato["contenido"] if isinstance(formato, dict) else formato,
+                    "intent":     intent,
                     "parameters": None,
-                    "resultados": lista_documentos
+                    "resultados": intent_data.get("resultados")
                 }
-
-        # PROCESAR SEGÚN INTENT Y ESTADO
         if intent == "saludo":
-            respuesta = respuesta_saludo_contextual(conversation_context)
+            respuesta      = respuesta_saludo_contextual(conversation_context)
             tipo_resultado = "saludo"
-            
+
         elif intent == "confirmar_seleccion":
             confirmacion_positiva = intent_data.get("confirmacion_positiva")
-            
+            state                 = conversation_state.get("state") if conversation_state else None
+
             if confirmacion_positiva:
-                if conversation_state.get("state") == "awaiting_choice":
+                if state == "awaiting_choice":
                     conversation_memory.set_filtered_search_mode(numero_telefono)
-                    respuesta = "Perfecto! ¿En qué más puedo ayudarte? \n Si quieres iniciar una nueva búsqueda, escribe 'Hola'"
-                elif conversation_state.get("state") == "awaiting_verification":
-                    respuesta = "Perfecto! ¿En qué más puedo ayudarte? \n Si quieres iniciar una nueva búsqueda, escribe 'Hola'"
+                respuesta      = "Perfecto! ¿En qué más puedo ayudarte?\nSi quieres iniciar una nueva búsqueda, escribe 'Hola'"
                 tipo_resultado = "confirmacion_positiva"
             else:
-                if conversation_state.get("state") == "awaiting_choice":
-                    respuesta = "Entiendo. Realiza una búsqueda más específica basada en los resultados mostrados. \n Si quieres iniciar una nueva búsqueda, escribe 'Hola'."
-                elif conversation_state.get("state") == "awaiting_verification":
-                    respuesta = "Entiendo. ¿Podrías especificar mejor el documento que buscas? \n Si quieres iniciar una nueva búsqueda, escribe 'Hola'."
+                respuesta = (
+                    "Entiendo. Realiza una búsqueda más específica basada en los resultados mostrados.\nSi quieres iniciar una nueva búsqueda, escribe 'Hola'."
+                    if state == "awaiting_choice"
+                    else "Entiendo. ¿Podrías especificar mejor el documento que buscas?\nSi quieres iniciar una nueva búsqueda, escribe 'Hola'."
+                )
                 tipo_resultado = "confirmacion_negativa"
 
         elif intent == "seleccionar_documento":
-            # Usuario está seleccionando de una lista
-            if documentos_guardados:
-                #Verificar si viene de notificación
-                source_intent = documentos_guardados[0].get('source_intent') if documentos_guardados else None
-                print(f"🔍 Source intent detectado: {source_intent}")
-                
-                resultado_seleccion = seleccionar_respuesta(
-                    mensaje, 
-                    conversation_context, 
-                    documentos_guardados,
-                    conversation_state
-                )
-                
-                if resultado_seleccion:
-                    docs_encontrados = resultado_seleccion.get("documentos_encontrados", [])
-                    
-                    if docs_encontrados:
-                        if len(docs_encontrados) == 1:
-                            # Un documento específico encontrado
-                            doc = docs_encontrados[0]
-                            
-                            # Usar formato DETALLADO
-                            respuesta = formatear_documento_detalle_notificacion(doc)
-                            
-                            return {
-                                "tipo": "detalle",
-                                "respuesta": respuesta,
-                                "intent": "seleccionar_documento",
-                                "parameters": resultado_seleccion.get('parameters', {}),
-                                "resultados": [doc]
-                            }
-                        
-                        elif len(docs_encontrados) > 1:
-                            # Múltiples documentos encontrados - mostrar lista simple
-                            from utils.formatter import formatear_lista_documentos
-                            respuesta = formatear_lista_documentos(docs_encontrados)
-                            
-                            return {
-                                "tipo": "lista",
-                                "respuesta": respuesta,
-                                "intent": "seleccionar_documento",
-                                "parameters": {"results_count": len(docs_encontrados)},
-                                "resultados": docs_encontrados
-                            }
-                            
-                        else:
-                            # Múltiples documentos encontrados
-                            print(f"📋 Múltiples documentos encontrados: {len(docs_encontrados)}")
-                            respuesta = formatear_lista_documentos(docs_encontrados)
-                            tipo_resultado = "lista"
-                            parameters["results_count"] = len(docs_encontrados)
-                    else:
-                        respuesta = "❌ No encontré el documento que mencionas en los resultados anteriores. ¿Puedes ser más específico?"
-                        tipo_resultado = "error"
-                else:
-                    respuesta = "❌ No pude procesar tu selección. Intenta de nuevo."
-                    tipo_resultado = "error"
-            else:
-                respuesta = "❌ No hay documentos disponibles para seleccionar. Realiza una nueva búsqueda."
-                tipo_resultado = "error"
+            if not documentos_guardados:
+                return _error_response("❌ No hay documentos disponibles para seleccionar. Realiza una nueva búsqueda.")
 
-        # Actualización en el manejo de intents
-        elif intent == "contactar_encargado":
-            print("Conversacion Context", conversation_context)
-            respuesta = manejar_contacto_encargado(numero_telefono, conversation_context, tipo_contacto="encargado")
-            tipo_resultado = "contacto"
+            resultado_seleccion = seleccionar_respuesta(
+                mensaje, conversation_context, documentos_guardados, conversation_state
+            )
+            if not resultado_seleccion:
+                return _error_response("❌ No pude procesar tu selección. Intenta de nuevo.")
 
-     
-        elif intent in ["listar_sin_respuesta", "listar_sin_firma", "listar_inactivos", "listar_stand_by"]:
-            print(f"📋 Listando notificaciones de tipo: {intent}")
-            
-            # Mapear intent a tipo interno
-            tipo_map = {
-                "listar_sin_respuesta": "sin_respuesta",
-                "listar_sin_firma": "sin_firma",
-                "listar_inactivos": "inactivos",
-                "listar_stand_by": "stand_by"
-            }
-            
-            tipo_interno = tipo_map[intent]
-            
-            # Obtener y formatear notificaciones
-            mensaje_formateado = notification_manager.format_notifications_by_type(
-                numero_telefono, 
-                tipo_interno
-            )
-            
-            # Obtener notificaciones para guardar en memoria
-            notifications = notification_manager.get_notifications_by_type(
-                numero_telefono, 
-                tipo_interno
-            )
-            
-            if notifications and len(notifications) == 1:
-                # Una sola notificación, guardar documentos
-                documentos = notifications[0].get('documentos', [])
-                
-                conversation_memory.set_conversation_documents(
-                    phone_number=numero_telefono,
-                    documents=documentos,
-                    source_intent=intent,
-                    source_query=f"Notificaciones {tipo_interno}"
-                )
-                
-                conversation_memory.set_conversation_state(
-                    phone_number=numero_telefono,
-                    state="awaiting_choice",
-                    additional_info={
-                        "has_document_list": True,
-                        "notification_type": tipo_interno,
-                        "current_flow": "lista"
-                    }
-                )
-                
+            docs_encontrados = resultado_seleccion.get("documentos_encontrados", [])
+
+            if not docs_encontrados:
+                return _error_response("❌ No encontré el documento que mencionas en los resultados anteriores. ¿Puedes ser más específico?")
+
+            if len(docs_encontrados) == 1:
+                doc = docs_encontrados[0]
                 return {
-                    "respuesta": mensaje_formateado,
-                    "tipo": "lista",
-                    "intent": intent,
-                    "resultados": documentos,
-                    "notification_type": tipo_interno
+                    "tipo":       "detalle",
+                    "respuesta":  formatear_documento_detalle_notificacion(doc),
+                    "intent":     "seleccionar_documento",
+                    "parameters": resultado_seleccion.get('parameters', {}),
+                    "resultados": [doc]
                 }
-            
+
             return {
-                "respuesta": mensaje_formateado,
-                "tipo": "consulta",
-                "intent": intent,
-                "notification_type": tipo_interno
+                "tipo":       "lista",
+                "respuesta":  formatear_lista_documentos(docs_encontrados),
+                "intent":     "seleccionar_documento",
+                "parameters": {"results_count": len(docs_encontrados)},
+                "resultados": docs_encontrados
             }
-            
-        elif intent == "contactar_responsable":
-            print("Conversacion Context", conversation_context)
-            respuesta = manejar_contacto_encargado(numero_telefono, conversation_context, tipo_contacto="responsable")
+
+        elif intent == "contactar_encargado":
+            respuesta      = manejar_contacto_encargado(numero_telefono, conversation_context, tipo_contacto="encargado")
             tipo_resultado = "contacto"
+
+        elif intent == "contactar_responsable":
+            respuesta      = manejar_contacto_encargado(numero_telefono, conversation_context, tipo_contacto="responsable")
+            tipo_resultado = "contacto"
+
+        elif intent in ["listar_sin_respuesta", "listar_sin_firma", "listar_inactivos", "listar_stand_by"]:
+            from handlers.notification_handler import handle_notificaciones
+
+            return handle_notificaciones(numero_telefono, intent)
+            
 
         elif intent == "buscar_documentos" or intent_forzado == 'buscar_documentos':
-            nivel_acceso = conversation_context.get("nivel_acceso")
-            
-            if nivel_acceso == "user":
-                respuesta = "❌ Tu nivel de acceso no permite realizar búsquedas avanzadas. Puedes consultar documentos por número, proyecto o asunto."
+            if conversation_context.get("nivel_acceso") == "user":
+                respuesta      = "❌ Tu nivel de acceso no permite realizar búsquedas avanzadas."
                 tipo_resultado = "error"
             elif parametro:
-                print(f"🔍 Realizando búsqueda en Algolia: {parametro}")
-                
                 consulta_final = parametro
                 if parameters.get("is_follow_up") and conversation_context.get("recent_searches"):
                     consulta_final = f"{parametro} {conversation_context['recent_searches'][0]}"
                     print(f"🧠 Consulta enriquecida: {consulta_final}")
-                
-                documentos_algolia = generar_respuesta_busqueda_algolia(consulta_final)
-                respuesta = documentos_algolia
-                tipo_resultado = "algolia"
+
+                respuesta              = generar_respuesta_busqueda_algolia(consulta_final)
+                tipo_resultado         = "algolia"
                 parameters["algolia_query"] = consulta_final
             else:
-                respuesta = "❌ Por favor, especifica tu búsqueda."
+                respuesta      = "❌ Por favor, especifica tu búsqueda."
                 tipo_resultado = "error"
 
-        elif intent in ["seguimiento_por_numero_documento", "seguimiento_por_codigo", 
-                       "seguimiento_por_usuario", "seguimiento_por_proyecto", 
-                       "seguimiento_por_asunto", "seguimiento_por_consecutivo"] and intent_forzado != 'buscar_documentos':
-            
-            if parametro:
+        elif intent in [
+            "seguimiento_por_numero_documento", "seguimiento_por_codigo",
+            "seguimiento_por_usuario",           "seguimiento_por_proyecto",
+            "seguimiento_por_asunto",            "seguimiento_por_consecutivo"
+        ] and intent_forzado != 'buscar_documentos':
+
+            if not parametro:
+                respuesta      = "❌ Por favor, especifica el parámetro para consultar."
+                tipo_resultado = "error"
+            else:
                 print(f"🔍 Consultando {intent} para: {parametro}")
-                
-                if parameters.get("search_in_filtered") and documentos_guardados:
-                    print(f"🔍 Búsqueda filtrada en {len(documentos_guardados)} documentos guardados")
+
+                if should_filter:
                     seguimientos = buscar_en_documentos_guardados(documentos_guardados, parametro, intent)
                 else:
-                    print("🔍 Búsqueda en base de datos completa")
-                    if intent == "seguimiento_por_numero_documento":
-                        seguimientos = consultar_por_numero_documento(parametro)
-                    elif intent == "seguimiento_por_codigo":
-                        seguimientos = consultar_por_codigo_sistema(parametro)
-                    elif intent == "seguimiento_por_usuario":
-                        seguimientos = consultar_documentos_por_usuario(parametro)
-                    elif intent == "seguimiento_por_proyecto":
-                        seguimientos = consultar_documentos_por_proyecto(parametro)
-                    elif intent == "seguimiento_por_asunto":
-                        seguimientos = consultar_documento_por_asunto(parametro)
-                    elif intent == "seguimiento_por_consecutivo":
-                        seguimientos = consultar_por_numero_consecutivo(parametro)
+                    _consulta_fn = {
+                        "seguimiento_por_numero_documento": consultar_por_numero_documento,
+                        "seguimiento_por_codigo":           consultar_por_codigo_sistema,
+                        "seguimiento_por_usuario":          consultar_documentos_por_usuario,
+                        "seguimiento_por_proyecto":         consultar_documentos_por_proyecto,
+                        "seguimiento_por_asunto":           consultar_documento_por_asunto,
+                        "seguimiento_por_consecutivo":      consultar_por_numero_consecutivo,
+                    }
+                    seguimientos = _consulta_fn[intent](parametro)
 
                 if not seguimientos:
                     if intent == "seguimiento_por_numero_documento":
-                        print("⚠️ No se encontró por número de documento, probando con consecutivo...")
                         seguimientos = consultar_por_numero_consecutivo(parametro)
                         intent = "seguimiento_por_consecutivo"
                     elif intent == "seguimiento_por_consecutivo":
-                        print("⚠️ No se encontró por consecutivo, probando con número de documento...")
                         seguimientos = consultar_por_numero_documento(parametro)
                         intent = "seguimiento_por_numero_documento"
                     elif intent == "seguimiento_por_asunto":
-                        print("⚠️ No se encontró por asunto, probando con proyecto...")
                         seguimientos = consultar_documentos_por_proyecto(parametro)
                         intent = "seguimiento_por_proyecto"
 
                 if seguimientos:
-                    formato = formatear_seguimiento(seguimientos)
-                    respuesta = formato["contenido"]
+                    formato        = formatear_seguimiento(seguimientos)
+                    respuesta      = formato["contenido"]
                     tipo_resultado = formato["tipo"]
-                    
-                    if not parameters.get("search_in_filtered"):
+
+                    if not should_filter:
                         conversation_memory.set_conversation_documents(
-                            numero_telefono, 
-                            seguimientos,
-                            source_intent=intent,
-                            source_query=parametro
+                            numero_telefono, seguimientos,
+                            source_intent=intent, source_query=parametro
                         )
-                    
+
                     if isinstance(seguimientos, list):
                         parameters["results_count"] = len(seguimientos)
-                        parameters["resultados"] = seguimientos
+                        parameters["resultados"]    = seguimientos
                     else:
                         parameters.update(seguimientos)
-                        
-                    print(f"📊 Tipo de resultado: {tipo_resultado}")
                 else:
-                    respuesta = (
-                        f"❌ No se encontró información para: *{parametro}*\n\n"
-                        f"{SUGERENCIAS_BUSQUEDA}"
-                    )
-                    tipo_resultado = "no_encontrado"
-                    
+                    respuesta = f"❌ No se encontró información para: *{parametro}*\n\n{SUGERENCIAS_BUSQUEDA}"
                     if conversation_context.get("recent_documents"):
                         respuesta += f"\n💡 *¿Quizás querías consultar: {conversation_context['recent_documents'][0]}?*"
-            else:
-                respuesta = "❌ Por favor, especifica el parámetro para consultar."
-                tipo_resultado = "error"
-        
+                    tipo_resultado = "no_encontrado"
+
         elif intent == "seleccionar_notificacion":
-            #  SIEMPRE usar el handler específico de notificaciones
             return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
 
         elif intent == "error_seleccion_notificacion":
-            parametro = intent_data.get("parametro")
             error_msg = intent_data.get("error") or f"❌ No encontré '{parametro}' en la lista.\n\nIntenta con el número (1, 2, 3...) o el código del documento."
             return {
-                "tipo": "error_notificacion",
-                "respuesta": error_msg,
-                "intent": intent,
+                "tipo":       "error_notificacion",
+                "respuesta":  error_msg,
+                "intent":     intent,
                 "parameters": {"parametro": parametro}
             }
-
+        
+        elif intent == "error_seleccion_lista":
+            error_msg = intent_data.get("error") or (
+                f"❌ No encontré *'{intent_data.get('parametro', '')}'* en la lista.\n\n"
+                "Intenta con:\n"
+                "• El *número* de posición: 1, 2, 3...\n"
+                "• El *código*: ej. PR-001540\n"
+                "• Parte del *asunto* o nombre del *encargado*\n\n"
+                "Si quieres iniciar una nueva búsqueda, escribe *'Hola'*"
+            )
+            # Validar que sea string
+            if not isinstance(error_msg, str):
+                error_msg = str(error_msg)
+            return {
+                "tipo":       "error_seleccion",           
+                "respuesta":  error_msg,
+                "intent":     intent,
+                "parameters": {}
+            }
         else:
             texto = mensaje.lower().strip()
-            
-            if any(palabra in texto for palabra in ["ayuda", "cómo buscar", "como buscar", "necesito ayuda", "no entiendo"]):
+            if any(p in texto for p in ["ayuda", "cómo buscar", "como buscar", "necesito ayuda", "no entiendo"]):
                 respuesta = f"ℹ️ Parece que necesitas ayuda.\n\n{SUGERENCIAS_BUSQUEDA}"
-                
                 if conversation_context.get("recent_documents"):
                     respuesta += f"\n\n📋 *Documentos consultados: {', '.join(conversation_context['recent_documents'][:3])}*"
-                
                 tipo_resultado = "ayuda"
             else:
-                consulta_enriquecida = mensaje
-                if conversation_context.get("recent_documents") or conversation_context.get("recent_projects"):
-                    contexto_adicional = "Contexto previo: "
-                    if conversation_context.get("recent_documents"):
-                        contexto_adicional += f"Documentos: {', '.join(conversation_context['recent_documents'][:2])}. "
-                    if conversation_context.get("recent_projects"):
-                        contexto_adicional += f"Proyectos: {', '.join(conversation_context['recent_projects'][:2])}. "
-                    if conversation_context.get("recent_searches"):
-                        contexto_adicional += f"Búsquedas: {', '.join(conversation_context['recent_searches'][:2])}. "
-                    
-                    consulta_enriquecida = f"{contexto_adicional}\nConsulta: {mensaje}"
-                    print(f"🧠 Consulta enriquecida: {consulta_enriquecida[:100]}...")
-                
+                consulta_enriquecida = _enriquecer_consulta(mensaje, conversation_context)
                 respuesta_ia = consultar_ia_con_memoria(consulta_enriquecida, conversation_context, conversation_state)
                 if respuesta_ia:
-                    respuesta = (
-                        f"🤖 {respuesta_ia}\n\n"
-                        f"💡 *Puedes reiniciar escribiendo 'hola' o se reiniciará automáticamente en 1 hora*"
-                    )
+                    respuesta      = f"🤖 {respuesta_ia}\n\n💡 *Puedes reiniciar escribiendo 'hola' o se reiniciará automáticamente en 1 hora*"
                     tipo_resultado = "ia"
                 else:
-                    respuesta = (
-                        f"❌ No entendí tu consulta. "
-                        f"Puedes intentar con un formato específico.\n\n"
-                        f"{SUGERENCIAS_BUSQUEDA}"
-                    )
+                    respuesta      = f"❌ No entendí tu consulta.\n\n{SUGERENCIAS_BUSQUEDA}"
                     tipo_resultado = "error"
 
-        print(f"✅ Respuesta generada: {len(respuesta)} caracteres")
-        print(f"📊 Tipo resultado: {tipo_resultado}")
-        print(f"🎯 Intent procesado: {intent}")
-        print(f"{'='*60}\n")
-        
+        print(f"✅ Respuesta generada: {len(respuesta)} caracteres | Tipo: {tipo_resultado} | Intent: {intent}\n{'='*60}")
         return {
-            "tipo": tipo_resultado,
-            "respuesta": respuesta,
-            "intent": intent,
+            "tipo":       tipo_resultado,
+            "respuesta":  respuesta,
+            "intent":     intent,
             "parameters": parameters,
-            "resultados": parameters.get("resultados", []) if tipo_resultado == "lista" else None
+            "resultados": parameters.get("resultados") if tipo_resultado == "lista" else None
         }
 
     except Exception as e:
         print(f"❌ Error procesando mensaje: {e}")
         import traceback
         traceback.print_exc()
-        return {
-            "tipo": "error",
-            "respuesta": "❌ Disculpa, ocurrió un error interno. Por favor, inténtalo de nuevo.",
-            "intent": "error",
-            "parameters": {}
-        }
-    
+        return _error_response("❌ Disculpa, ocurrió un error interno. Por favor, inténtalo de nuevo.")
+
+def _error_response(mensaje: str) -> dict:
+    """Respuesta de error estándar."""
+    return {"tipo": "error", "respuesta": mensaje, "intent": "error", "parameters": {}}
+
+
+def _enriquecer_consulta(mensaje: str, conversation_context: dict) -> str:
+    """Agrega contexto previo a la consulta si existe."""
+    partes = []
+    if conversation_context.get("recent_documents"):
+        partes.append(f"Documentos: {', '.join(conversation_context['recent_documents'][:2])}")
+    if conversation_context.get("recent_projects"):
+        partes.append(f"Proyectos: {', '.join(conversation_context['recent_projects'][:2])}")
+    if conversation_context.get("recent_searches"):
+        partes.append(f"Búsquedas: {', '.join(conversation_context['recent_searches'][:2])}")
+
+    if partes:
+        contexto = "Contexto previo: " + ". ".join(partes)
+        print(f"🧠 Consulta enriquecida: {contexto[:100]}...")
+        return f"{contexto}\nConsulta: {mensaje}"
+
+    return mensaje
+
 
 def formatear_documento_detalle_notificacion(documento):
     """
@@ -519,6 +440,7 @@ def procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data):
             intent_data.get("parametro")
             or intent_data.get("notification_index")
             or (intent_data.get("documento_seleccionado") or {}).get("posicion_lista")
+            or intent_data.get("documento_seleccionado")("documento")("numero_documento")
         )
                 
         print(f"🔔 Procesando notificación #{parametro}")
@@ -600,9 +522,7 @@ def procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data):
         elif isinstance(timestamp_str, str) and len(timestamp_str) > 19:
             timestamp_str = timestamp_str[:19].replace('T', ' ')
         
-        # ============================
-        # CONSTRUIR MENSAJE DETALLADO
-        # ============================
+       
         respuesta = f"""⚠️ *Alerta de Documento* ⚠️
 ⏱️ Han pasado *15 días sin movimiento*.  
 Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
@@ -629,9 +549,7 @@ Por favor, revisa y actualiza su estado a *"Atendido"* si corresponde. 🙏
         
         respuesta += f"\n\n────────────────────────\n⏰ *Recibida:* {timestamp_str}"
         
-        # ============================
-        # GUARDAR CONTEXTO PARA CONTACTO
-        # ============================
+       
         conversation_memory.add_turn(
             phone_number=numero_telefono,
             user_message=f"Ver notificación {parametro}",
@@ -688,18 +606,14 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     """Genera mensaje para WhatsApp - VERSIÓN MEJORADA CON SOPORTE PARA ENCARGADO Y RESPONSABLE"""
     print(f"Información del documento (tipo_contacto: {tipo_contacto}):", payload)
     
-    # Inicializar variables
     celular = None
     nombre = None
     etiqueta_contacto = "encargado" if tipo_contacto == "encargado" else "responsable"
     
-    # Para documentos de prueba del JSON
     try:
         if tipo_contacto == "responsable":
-            # Buscar en responsables
             responsables = None
             
-            # Intentar diferentes estructuras
             if 'documento' in payload:
                 if 'notification' in payload['documento'] and 'payload' in payload['documento']['notification']:
                     responsables = payload['documento']['notification']['payload'].get('responsables')
@@ -716,10 +630,8 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
                 raise KeyError("No hay responsables en la lista")
                 
         else:
-            # Buscar en encargados (comportamiento original)
             encargados = None
             
-            # Intentar diferentes estructuras
             if 'documento' in payload:
                 if 'notification' in payload['documento'] and 'payload' in payload['documento']['notification']:
                     encargados = payload['documento']['notification']['payload'].get('encargados')
@@ -748,9 +660,7 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     numero_doc = documento_info.get('numero_documento', 'DOC-001')
     asunto = documento_info.get('asunto', 'Asunto no disponible')[:100]
 
-    # ============================
-    # 2. Extraer encargado
-    # ============================
+ 
     try:
         encargado = payload['documento']['notification']['payload']['encargados'][0]
         nombre = f"{encargado.get('nombres','')} {encargado.get('apellido_paterno','')}".strip()
@@ -760,9 +670,7 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
         nombre = "Usuario"
         celular = None
 
-    # ============================
-    # 3. Construir mensaje
-    # ============================
+   
     mensaje = (
         f"Hola {nombre.split()[0]}, te contacto respecto al documento:"
         f"\n📄 {numero_doc}"
@@ -771,14 +679,12 @@ def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
     )
 
     
-    # Limpiar y formatear número
     celular_limpio = re.sub(r"[^0-9]", "", celular)
     if not celular_limpio.startswith('51'):
         celular_limpio = '51' + celular_limpio.lstrip('0')
     
     url_whatsapp = f"https://wa.me/{celular_limpio}?text={requests.utils.quote(mensaje)}"
     
-    # Retornar diccionario con ambas claves para compatibilidad
     return {
         'mensaje': mensaje,
         'url_whatsapp': url_whatsapp,
@@ -795,7 +701,6 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
         alert_payload = None
         documento_info = None
 
-        # 1. BUSCAR EN TURNOS RECIENTES
         if hasattr(conversation_memory, 'conversations') and numero_telefono in conversation_memory.conversations:
             ultimos = conversation_memory.conversations[numero_telefono][-5:]
             for i, turno in enumerate(reversed(ultimos)):  # más reciente primero
@@ -808,7 +713,6 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
                     print(f"✅ alert_payload encontrado en turno -{i+1}")
                     break
 
-                # Turno de notificación seleccionada
                 if turno.intent == 'notification_selected':
                     params = turno.parameters if isinstance(turno.parameters, dict) else {}
                     notification = params.get('selected_notification', {})
@@ -817,7 +721,6 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
                         print(f"✅ payload extraído de notification_selected en turno -{i+1}")
                         break
 
-                # Turno de seguimiento con info de documento
                 if turno.intent in ['seleccionar_notificacion', 'seguimiento_por_codigo', 'seguimiento_por_numero_documento']:
                     params = turno.parameters if isinstance(turno.parameters, dict) else {}
                     if params:
@@ -825,7 +728,6 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
                         print(f"📄 documento_info encontrado en turno -{i+1}: {turno.intent}")
                         break
 
-        # 2. BUSCAR EN DOCUMENTOS GUARDADOS
         if not alert_payload and not documento_info:
             print("🔍 Buscando en documentos guardados...")
             documentos_guardados = conversation_memory.get_conversation_documents(numero_telefono, limit=5)
@@ -839,7 +741,6 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
                         print(f"📚 Documento con contacto encontrado: {doc.get('codigo_sistema', 'N/A')}")
                         break
 
-        # PROCESAR
         if alert_payload:
             print("✅ Procesando alert_payload")
             return procesar_alert_payload(alert_payload, numero_telefono, tipo_contacto)
@@ -857,28 +758,25 @@ def manejar_contacto_encargado(numero_telefono, conv_context, tipo_contacto="enc
         import traceback
         traceback.print_exc()
         return "❌ Error interno al generar el contacto. Por favor, inténtalo de nuevo."
+
 def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="encargado"):
     """Procesa información de documento para generar contacto con formato WhatsApp"""
     try:
         print(f"📄 Iniciando procesamiento de documento_info (tipo: {tipo_contacto})...")
         print("🔍 documento_info recibido:", documento_info)
 
-        # Inicializar variables
         contacto_nombre = None
         celular = None
         documento_id = None
         
-        # Etiquetas según tipo de contacto
         etiqueta_contacto = "encargado" if tipo_contacto == "encargado" else "responsable"
         etiqueta_mayus = "Encargado" if tipo_contacto == "encargado" else "Responsable"
 
         if isinstance(documento_info, dict):
             print(f"✅ documento_info es un diccionario, buscando {etiqueta_contacto}...")
             
-            # Buscar contacto según tipo
             try:
                 if tipo_contacto == "responsable":
-                    # Buscar responsable
                     if documento_info.get("responsables"):
                         resp = documento_info["responsables"]
                         print("👥 Lista de responsables:", resp)
@@ -892,7 +790,6 @@ def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="enca
                         contacto_nombre = documento_info["responsable"]
                         print("👤 Responsable encontrado:", contacto_nombre)
                 else:
-                    # Buscar encargado (comportamiento original)
                     if documento_info.get("usuario_asignado"):
                         contacto_nombre = documento_info["usuario_asignado"]
                         print("👤 Encontrado usuario_asignado:", contacto_nombre)
@@ -911,7 +808,6 @@ def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="enca
             except Exception as e:
                 print(f"❌ Error buscando {etiqueta_contacto}:", e)
 
-            # Buscar celular si aún no lo tienes
             try:
                 if not celular:
                     celular = (
@@ -934,9 +830,7 @@ def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="enca
             except Exception as e:
                 print("❌ Error buscando documento_id:", e)
 
-            # ✅ Usar la función generar_mensaje_whatsapp para armar respuesta final
             try:
-                # Empaquetar en payload con estructura mínima para generar mensaje
                 payload = {"documento": documento_info}
                 if tipo_contacto == "responsable" and documento_info.get("responsables"):
                     payload["responsables"] = documento_info["responsables"]
@@ -961,7 +855,6 @@ def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="enca
 """
                 print("🤖 Respuesta generada:\n", respuesta)
 
-                # Registrar en la memoria de conversación
                 try:
                     context_info = {
                         "contact_generated": True,
@@ -1003,7 +896,6 @@ def procesar_documento_info(documento_info, numero_telefono, tipo_contacto="enca
 def procesar_alert_payload(alert_payload, numero_telefono, tipo_contacto="encargado"):
     """Procesa alert_payload para generar contacto"""
     try:
-        # Convertir de string a dict si es necesario
         if isinstance(alert_payload, str):
             try:
                 alert_payload = json.loads(alert_payload)
@@ -1034,7 +926,6 @@ def procesar_alert_payload(alert_payload, numero_telefono, tipo_contacto="encarg
 💡 Solo haz clic en el link y se abrirá WhatsApp con el mensaje listo para enviar.
 """
             
-            # Registrar el contacto generado
             context_info = {
                 "contact_generated": True,
                 "contact_type": tipo_contacto,
@@ -1075,7 +966,6 @@ def generar_respuesta_sin_info_contacto(conv_context, tipo_contacto="encargado")
 
 Luego podrás solicitar el contacto del {etiqueta_contacto}.
 """
-# ========================= FUNCIONES DE WHATSAPP =========================
 def enviar_mensaje_whatsapp(numero_telefono, mensaje):
     try:
         # Validar que el mensaje no esté vacío
@@ -1144,9 +1034,6 @@ def numero_autorizado(numero_telefono):
     if resultado and len(resultado) > 0:
         return resultado[0]  
     return None
-
-
-
 
 
 def respuesta_saludo_contextual(conversation_context):
@@ -1227,96 +1114,82 @@ def formatear_lista_documentos(seguimientos):
     """
     Formatea lista DETALLADA de documentos para notificaciones de WhatsApp
     Muestra: número, código, tipo, asunto, proyecto, encargado, fecha
-    Estilo similar al formato consolidado de email
     """
     if not seguimientos:
         return "❌ No se encontraron documentos."
-    
+
     if not isinstance(seguimientos, list):
         return "⚠️ Error: formato de datos inválido."
-    
-    cantidad = len(seguimientos)
-    mensaje = ""
-    
-    # Limitar a 10 documentos para legibilidad en WhatsApp
-    documentos_a_mostrar = seguimientos[:100]
-    
+
+    from datetime import datetime
+
+    cantidad             = len(seguimientos)
+    documentos_a_mostrar = seguimientos[:10]
+    mensaje              = ""
+
     for idx, seg in enumerate(documentos_a_mostrar, 1):
-        # Extraer documento según estructura
-        if isinstance(seg, dict):
-            doc = seg.get('documento', seg)
-            proyecto_data = seg.get('proyecto', {})
-            encargados = seg.get('encargados', [])
-            
-            # Extraer campos del documento
-            codigo = doc.get('codigo_sistema', 'N/A')
-            tipo = doc.get('tipo', 'N/A')
-            numero_doc = doc.get('numero_documento', 'N/A')
-            asunto = doc.get('asunto', 'Sin asunto')
-            dias_inactivo = doc.get('dias_inactivo')
-            fecha_ingreso = doc.get('fecha_ingreso', '')
-            estado = doc.get('estado', '')
+        if not isinstance(seg, dict):
+            continue
 
-            
-            # Extraer nombre del proyecto
-            if isinstance(proyecto_data, dict):
-                proyecto = proyecto_data.get('nombre', 'N/A')
-            elif isinstance(proyecto_data, str):
-                proyecto = proyecto_data
-            else:
-                proyecto = 'N/A'
-            
-            # Obtener nombre del encargado
-            encargado_nombre = 'Sin asignar'
-            if encargados and len(encargados) > 0:
-                enc = encargados[0]
-                encargado_nombre = f"{enc.get('nombres', '')} {enc.get('apellido_paterno', '')}".strip()
-            
-            # Formatear fecha de ingreso
-            if fecha_ingreso:
-                try:
-                    from datetime import datetime
-                    fecha_obj = datetime.strptime(fecha_ingreso[:10], '%Y-%m-%d')
-                    fecha_ingreso = fecha_obj.strftime('%d/%m/%Y')
-                except:
-                    fecha_ingreso = fecha_ingreso[:10] if len(fecha_ingreso) >= 10 else fecha_ingreso
-            
-            # Truncar asunto si es muy largo
-            if len(asunto) > 70:
-                asunto = asunto[:67] + "..."
-            
-            # Formato detallado
-            mensaje += f"*{idx}. {numero_doc}*\n"
-            
-            if asunto and asunto != 'Sin asunto':
-                mensaje += f"   📄 {asunto}\n"
-            
-            if proyecto and proyecto != 'N/A':
-                mensaje += f"   🏗️ {proyecto}\n"
-            
-            mensaje += f"   👤 En atención de: {encargado_nombre}\n"
-            
-            if fecha_ingreso:
-                mensaje += f"   📅 Ingreso: {fecha_ingreso}\n"
-            
-            if estado:
-                mensaje += f"   📌 Estado: {estado}\n"
+        doc           = seg.get('documento', seg)
+        proyecto_data = seg.get('proyecto', {})
+        encargados    = seg.get('encargados', [])
 
-            # Agregar días de inactividad si existe
-            if dias_inactivo is not None:
-                mensaje += f"   ⏱️ Inactivo: {dias_inactivo} días\n"
-            
-            mensaje += "\n"
-    
-    # Indicar si hay más documentos
+        codigo      = doc.get('codigo_sistema', 'N/A')
+        numero_doc  = doc.get('numero_documento', 'N/A')
+        asunto      = doc.get('asunto', 'Sin asunto') or 'Sin asunto'
+        estado      = doc.get('estado', '')
+        dias_inact  = doc.get('dias_inactivo')
+        fecha_raw   = doc.get('fecha_ingreso', '')
+
+        if isinstance(proyecto_data, dict):
+            proyecto = proyecto_data.get('nombre', 'N/A')
+        elif isinstance(proyecto_data, str):
+            proyecto = proyecto_data
+        else:
+            proyecto = 'N/A'
+
+        encargado_nombre = 'Sin asignar'
+        if encargados:
+            enc = encargados[0]
+            if isinstance(enc, dict):
+                encargado_nombre = f"{enc.get('nombres', '')} {enc.get('apellido_paterno', '')}".strip() or 'Sin asignar'
+
+        fecha_str = ''
+        if isinstance(fecha_raw, datetime):
+            fecha_str = fecha_raw.strftime('%d/%m/%Y')
+        elif isinstance(fecha_raw, str) and fecha_raw:
+            try:
+                fecha_str = datetime.strptime(fecha_raw[:10], '%Y-%m-%d').strftime('%d/%m/%Y')
+            except ValueError:
+                fecha_str = fecha_raw[:10]
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Truncar asunto
+        if len(asunto) > 70:
+            asunto = asunto[:67] + "..."
+
+        # Componer bloque
+        mensaje += f"*{idx}. {numero_doc}*\n"
+        if asunto != 'Sin asunto':
+            mensaje += f"   📄 {asunto}\n"
+        if proyecto and proyecto != 'N/A':
+            mensaje += f"   🏗️ {proyecto}\n"
+        mensaje += f"   👤 En atención de: {encargado_nombre}\n"
+        if fecha_str:
+            mensaje += f"   📅 Ingreso: {fecha_str}\n"
+        if estado:
+            mensaje += f"   📌 Estado: {estado}\n"
+        if dias_inact is not None:
+            mensaje += f"   ⏱️ Inactivo: {dias_inact} días\n"
+        mensaje += "\n"
+
     if cantidad > 10:
         mensaje += f"_... y {cantidad - 10} documento(s) más_\n\n"
-    
+
     mensaje += f"_Total: {cantidad} documento{'s' if cantidad != 1 else ''}_"
-    
+
     return mensaje
-
-
 
 def limpiar_notificaciones_antiguas():
     """Limpia notificaciones más antiguas de 1 hora"""

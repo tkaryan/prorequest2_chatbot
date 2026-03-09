@@ -13,404 +13,10 @@ from services.notificacion_services import (
     notification_manager
 )
 import threading
+from handlers.whatsapp_handler import *
 
-import os
-import json
-import requests
-from typing import List, Dict, Union, Optional
+from typing import List
 app = Flask(__name__)
-_processed_message_ids: set = set()
-
-@app.route('/whatsapp/webhook', methods=['GET', 'POST'])
-def whatsapp_webhook():
-    """Webhook para WhatsApp Business API - CON SOPORTE PARA PLANTILLAS Y BOTONES POR TIPO"""
-    if request.method == 'GET':
-        # Verificación del webhook
-        token = request.args.get('hub.verify_token')
-        challenge = request.args.get('hub.challenge')
-
-        if token == WHATSAPP_VERIFY_TOKEN:
-            print("✅ Webhook verificado correctamente")
-            return challenge
-        else:
-            print("❌ Token de verificación inválido")
-            return 'Token de verificación inválido', 403
-        
-    elif request.method == 'POST':
-        # Procesar mensaje entrante
-        try:
-            data = request.get_json()
-            
-            # Verificar si hay mensajes entrantes
-            if not (data.get('entry') and len(data['entry']) > 0 
-                    and data['entry'][0].get('changes') 
-                    and len(data['entry'][0]['changes']) > 0):
-                return jsonify({'status': 'no_messages'}), 200
-            
-            changes = data['entry'][0]['changes'][0]
-            value = changes.get('value', {})
-            
-            # MANEJAR RESPUESTAS DE BOTÓN Y TEXTO
-            if 'messages' in value:
-                message = value['messages'][0]
-
-                message_id = message.get('id', '')
-                if message_id and message_id in _processed_message_ids:
-                    print(f"⚠️ Webhook duplicado ignorado: {message_id}")
-                    return jsonify({'status': 'duplicate'}), 200
-                if message_id:
-                    _processed_message_ids.add(message_id)
-                    # Limpiar cache si crece demasiado
-                    if len(_processed_message_ids) > 1000:
-                        _processed_message_ids.clear()
-
-                numero_telefono = message['from']
-                tipo = message.get('type')
-
-                # Extraer payload del botón o texto del mensaje
-                button_payload = ''
-                message_text = ''
-
-                if tipo == 'button':
-                    button_payload = message.get('button', {}).get('payload', '')
-                    message_text = message.get('button', {}).get('text', '').lower().strip()
-                elif tipo == 'text':
-                    message_text = message.get('text', {}).get('body', '').lower().strip()
-
-      
-                
-                # Verificar autorización
-                usuario = numero_autorizado(numero_telefono)
-                if not usuario:
-                    if "chatbot" not in message_text:
-                        mensaje_contacto = (
-                            "👋 *¡Hola!*\n\n"
-                            "Este es el chatbot de ProRequest. "
-                            "Actualmente no estás registrado en nuestro sistema.\n\n"
-                            "📞 *Para agregar tus datos:*\n"
-                            "Comunicarse con la administración\n"
-                            "👤 *Juan David*\n"
-                            "📱 +51 957 133 488"
-                        )
-                        enviar_mensaje_whatsapp(numero_telefono, mensaje_contacto)
-                    return jsonify({'status': 'unauthorized'}), 403
-
-                # MAPEO DE TIPOS DE REVISIÓN (botones y texto)
-                TIPOS_REVISION = {
-                    # Payloads de botones
-                    "revisar_sin_respuesta": "sin_respuesta",
-                    "revisar_sin_firma": "sin_firma",
-                    "revisar_inactivos": "inactivos",
-                    "revisar_stand_by": "stand_by",
-                    # Textos equivalentes - PLURAL
-                    "revisar sin respuesta": "sin_respuesta",
-                    "sin respuesta": "sin_respuesta",
-                    "revisar sin firma": "sin_firma",
-                    "sin firma": "sin_firma",
-                    "revisar inactivos": "inactivos",
-                    "inactivos": "inactivos",
-                    "revisar stand by": "stand_by",
-                    "stand by": "stand_by",
-                    "revisar sin respuesta": "sin_respuesta",  
-                    "revisar sin firma": "sin_firma",  
-                    "revisar inactivo": "inactivos",  
-                    "inactivo": "inactivos",  
-                    "revisar stand by": "stand_by"  
-                }
-
-                # Detectar tipo de revisión solicitada
-                tipo_revision = None
-                
-                # Priorizar payload del botón
-                if button_payload in TIPOS_REVISION:
-                    tipo_revision = TIPOS_REVISION[button_payload]
-                # Buscar en texto
-                elif message_text in TIPOS_REVISION:
-                    tipo_revision = TIPOS_REVISION[message_text]
-
-                if tipo_revision:
-                    print(f"🔍 Revisión solicitada para tipo: {tipo_revision}")
-                    
-                    # Obtener notificaciones de ese tipo específico
-                    notifications = notification_manager.get_notifications_by_type(
-                        numero_telefono, 
-                        tipo_revision
-                    )
-                    
-                    # 🔍 DEBUG - ver qué hay en memoria
-                    todos = notification_manager.user_notifications.get(numero_telefono, {})
-                    print(f"📊 Estado notification_manager para {numero_telefono}:")
-                    for t, lista in todos.items():
-                        print(f"   [{t}]: {len(lista)} grupos")
-                    print(f"   → Solicitado [{tipo_revision}]: {len(notifications)} notificaciones")
-                    
-                    if len(notifications) > 0:
-                        notification = notifications[0]
-                        documentos = notification.get('documentos', [])
-                        
-                        print(f"📄 Mostrando lista de {len(documentos)} documentos tipo {tipo_revision}")
-                        
-                        #  USAR formatear_lista_documentos
-                        respuesta = formatear_lista_documentos(documentos)
-                        
-                        enviar_mensaje_whatsapp(numero_telefono, respuesta)
-                        
-                        # Guardar documentos en memoria con tipo específico
-                        conversation_memory.set_conversation_documents(
-                            phone_number=numero_telefono,
-                            documents=documentos,
-                            source_intent=f"notificacion_{tipo_revision}",
-                            source_query=f"Revisión: {tipo_revision}"
-                        )
-                        
-                        # Cambiar estado a awaiting_notification_choice
-                        conversation_memory.set_conversation_state(
-                            phone_number=numero_telefono,
-                            state="awaiting_notification_choice",
-                            additional_info={
-                                "has_document_list": True,
-                                "last_search_results_count": len(documentos),
-                                "notification_id": notification.get('id'),
-                                "pending_notifications_count": len(notifications),
-                                "notification_type": tipo_revision
-                            }
-                        )
-                        
-                        # Enviar pregunta de elección
-                        pregunta = "¿En cuál de los documentos requieres información?\n\n" \
-                                 "💡 Escribe el número del documento o describe cuál buscas.\n" \
-                                 "Si quieres iniciar una nueva búsqueda, escribe 'Hola'"
-                        enviar_mensaje_whatsapp(numero_telefono, pregunta)
-                        
-                        # Marcar notificación como vista
-                        notification_manager.mark_notification_as_viewed(
-                            numero_telefono, 
-                            notification['id']
-                        )
-                        
-                    else:
-                        # Múltiples notificaciones del mismo tipo - mostrar grupos
-                        respuesta = notification_manager.get_notifications_by_type(
-                            numero_telefono, 
-                            tipo_revision
-                        )
-                        enviar_mensaje_whatsapp(numero_telefono, respuesta)
-                        
-                        # Cambiar estado a awaiting_notification_choice
-                        conversation_memory.set_conversation_state(
-                            phone_number=numero_telefono,
-                            state="awaiting_notification_choice",
-                            additional_info={
-                                "pending_notifications_count": len(notifications),
-                                "notification_type": tipo_revision
-                            }
-                        )
-                    
-                    return jsonify({'status': 'success'}), 200
-
-                
-                #  SI NO ES REVISIÓN, PROCESAR COMO MENSAJE NORMAL
-                if tipo == 'text':
-                    texto_mensaje = message_text
-                    print(f"📱 Mensaje de texto recibido: {texto_mensaje}")
-                    
-                    # 🧠 Establecer rol del usuario en memoria
-                    conversation_memory.set_user_role(numero_telefono, usuario["nivel_acceso"])
-                    
-                    # 🧠 Obtener estado actual ANTES de procesar
-                    conversation_state = conversation_memory.get_conversation_state(numero_telefono)
-                    conv_context = conversation_memory.get_conversation_context(numero_telefono)
-                    
-                    print(f"🧠 Estado conversación: {conversation_state['state']}")
-                    print(f"🧠 Contexto: {conv_context['session_length']} turnos")
-                    print(f"🔍 Debe buscar BD completa: {conversation_state['should_search_full_db']}")
-                    
-                    # 🔄 Procesar mensaje con estados
-                    print("🔄 Procesando mensaje...")
-                    
-                    # Forzar intent de búsqueda si contiene palabra clave
-                    PALABRAS_BUSQUEDA = ["buscar", "busqueda", "búsqueda", "search", "uscar"]
-                    intent_forzado = None
-                    
-                    texto_lower = texto_mensaje.lower()
-                    if any(palabra in texto_lower for palabra in PALABRAS_BUSQUEDA):
-                        intent_forzado = "buscar_documentos"
-                    
-                    respuesta_completa = procesar_mensaje(
-                        texto_mensaje,
-                        numero_telefono,
-                        conversation_state=conversation_state,
-                        conversation_context=conv_context,
-                        intent_forzado=intent_forzado
-                    )
-                    
-                    print("🔍 RESPUESTA ANTES DE WHATSAPP:", respuesta_completa)
-                    
-                    # Extraer respuesta y tipo
-                    if isinstance(respuesta_completa, dict):
-                        respuesta = respuesta_completa.get("respuesta")
-                        tipo_resp = respuesta_completa.get("tipo")
-                        intent = respuesta_completa.get("intent", "unknown")
-                        parameters = respuesta_completa.get("parameters", {})
-                    else:
-                        respuesta = str(respuesta_completa)
-                        tipo_resp = "consulta"
-                        intent = "general"
-                        parameters = {}
-                    
-                    # Actualizar flow según tipo
-                    if tipo_resp == 'detalle':
-                        conversation_memory.is_in_flow(numero_telefono, 'busqueda_general')
-                    elif tipo_resp == 'lista':
-                        conversation_memory.is_in_flow(numero_telefono, 'busqueda_en_lista')
-                    
-                    print("🪵 DEBUG - Respuesta procesada:")
-                    print(f"   • Tipo   : {tipo_resp}")
-                    print(f"   • Intent : {intent}")
-                    print(f"   • Longitud: {len(str(respuesta)) if respuesta else 0} caracteres")
-                    
-                    # 🔄 Manejo especial para respuestas dict
-                    if isinstance(respuesta, dict):
-                        print(f"   • Keys   : {list(respuesta.keys())}")
-                        if 'contenido' in respuesta:
-                            respuesta = respuesta['contenido']
-                        elif 'message' in respuesta:
-                            respuesta = respuesta['message']
-                        else:
-                            respuesta = str(respuesta)
-                    
-                    # 🧠 DETERMINAR message_type
-                    message_type = "consulta"  # Default
-                    
-                    if tipo_resp == 'detalle' or tipo_resp == 'select_document':
-                        message_type = "verificacion"
-                    elif tipo_resp == 'lista':
-                        message_type = "eleccion"
-                        if 'resultados' in respuesta_completa:
-                            parameters["results_count"] = len(respuesta_completa['resultados'])
-                    elif intent in ["contactar_encargado","contactar_responsable", "algolia_search"]:
-                        message_type = "consulta"
-                    elif intent == "confirmar_seleccion":
-                        message_type = "confirmacion"
-                    
-                    print(f"📝 Message type determinado: {message_type}")
-                    
-                    # Enviar respuesta principal
-                    if respuesta:
-                        exito_envio = enviar_mensaje_whatsapp(numero_telefono, respuesta)
-                        current_flow = conversation_memory.get_current_flow(numero_telefono)
-                        print(f"FLOW ACTUAL: {current_flow}")
-                        
-                        if exito_envio:
-                            print(f"✅ Respuesta enviada correctamente a {numero_telefono}")
-                            
-                            # 🧠 GUARDAR TURNO EN MEMORIA
-                            conversation_memory.add_turn(
-                                phone_number=numero_telefono,
-                                user_message=texto_mensaje,
-                                bot_response=respuesta,
-                                intent=intent,
-                                parameters=parameters,
-                                context=conv_context,
-                                message_type=message_type
-                            )
-
-
-                            if intent in ["seleccionar_notificacion", "error_seleccion_notificacion"]:
-                                conversation_memory.set_conversation_state(
-                                    numero_telefono,
-                                    "awaiting_notification_choice",
-                                    {
-                                        "notifications_available": True,
-                                        "is_notification_flow": True,
-                                        "has_notification_list": True
-                                    }
-                                )
-                                print(f"🔔 Estado awaiting_notification_choice preservado tras add_turn")
-                            
-                            
-                            if 'resultados' in respuesta_completa or intent == "confirmar_seleccion":
-                                success = conversation_memory.set_conversation_documents(
-                                    phone_number=numero_telefono,
-                                    documents=respuesta_completa['resultados'],
-                                    source_intent=intent,
-                                    source_query=texto_mensaje
-                                )
-                                
-                                if success:
-                                    print(f"📚 {len(respuesta_completa['resultados'])} documentos guardados en memoria")
-                            
-                            if message_type == "eleccion":
-                                pregunta_confirmacion = "¿En cuál de los documentos requieres información?\n\n" \
-                                                      "Si quieres iniciar una nueva búsqueda, escribe 'Hola'"
-                                print(f"❓ Enviando pregunta de elección: {pregunta_confirmacion}")
-                                enviar_mensaje_whatsapp(numero_telefono, pregunta_confirmacion)
-                                
-                                conversation_memory.add_turn(
-                                    phone_number=numero_telefono,
-                                    user_message="[system] choice_question",
-                                    bot_response=pregunta_confirmacion,
-                                    intent="system_confirmation",
-                                    parameters={"confirmation_type": "choice"},
-                                    context={"awaiting_user_response": True},
-                                    message_type="system_question"
-                                )
-                            
-                            elif message_type == "verificacion":
-                                pregunta_confirmacion = "¿El documento es lo que estabas buscando?"
-                                print(f"❓ Enviando pregunta de verificación: {pregunta_confirmacion}")
-                                enviar_mensaje_whatsapp(numero_telefono, pregunta_confirmacion)
-                                
-                                conversation_memory.add_turn(
-                                    phone_number=numero_telefono,
-                                    user_message="[system] verification_question",
-                                    bot_response=pregunta_confirmacion,
-                                    intent="system_confirmation",
-                                    parameters={"confirmation_type": "verification"},
-                                    context={"awaiting_user_response": True},
-                                    message_type="system_question"
-                                )
-                            
-                            elif intent == "confirmar_seleccion":
-                                params = parameters or {}
-                                confirmacion_positiva = params.get("confirmacion_positiva", False)
-                                
-                                if confirmacion_positiva:
-                                    estado_anterior = conversation_state.get('state')
-                                    
-                                    if estado_anterior == "awaiting_choice":
-                                        seguimiento_msg = "Perfecto! Ahora puedes hacer consultas específicas sobre estos documentos. ¿En qué más te puedo ayudar?"
-                                        enviar_mensaje_whatsapp(numero_telefono, seguimiento_msg)
-                                        print("✅ Modo búsqueda filtrada activado por confirmación positiva de elección")
-                                    
-                                    elif estado_anterior == "awaiting_verification":
-                                        if current_flow in ['busqueda_en_lista', 'lista']:
-                                            conversation_memory.set_awaiting_choice_search_mode(numero_telefono)
-                                        seguimiento_msg = "¡Perfecto! ¿Necesitas ayuda con algo más? Puedes escribir 'hola' para empezar de nuevo."
-                                        enviar_mensaje_whatsapp(numero_telefono, seguimiento_msg)
-                                        print("✅ Verificación confirmada")
-                                
-                                else:
-                                    estado_anterior = conversation_state.get('state')
-                                    
-                                    if estado_anterior == "awaiting_verification":
-                                        if current_flow in ['busqueda_en_lista', 'lista']:
-                                            conversation_memory.set_awaiting_choice_search_mode(numero_telefono)
-                                        print("❌ Usuario rechazó verificación, pero MANTIENE búsqueda filtrada")
-                        
-                        else:
-                            print(f"❌ Error enviando respuesta a {numero_telefono}")
-                    else:
-                        print("⚠️ No se generó respuesta para enviar")
-            
-            return jsonify({'status': 'success'}), 200
-            
-        except Exception as e:
-            print(f"❌ Error procesando webhook WhatsApp: {e}")
-            import traceback
-            traceback.print_exc()
-            return jsonify({'status': 'error', 'message': str(e)}), 500
-
 
 
 def enviar_plantilla_whatsapp(numero: str, nombre_plantilla: str, parametros: List[str], idioma: str = "es_PE", tiene_boton: bool = True):
@@ -515,175 +121,173 @@ def enviar_plantilla_whatsapp(numero: str, nombre_plantilla: str, parametros: Li
         }
 
 
+def schedule_cleanup():
+    limpiar_notificaciones_antiguas()
+    # Programar siguiente limpieza
+    timer = threading.Timer(1800, schedule_cleanup)  # 30 minutos
+    timer.daemon = True
+    timer.start()
+
+
+@app.route('/whatsapp/webhook', methods=['GET','POST'])
+def whatsapp_webhook():
+
+    if request.method == 'GET':
+        return verify_whatsapp_webhook(request)
+
+    if request.method == 'POST':
+        try:
+
+            data = request.get_json()
+
+            message = extract_message(data)
+            if not message:
+                return jsonify({"status": "no_message"}), 200
+
+            numero_telefono = message["phone"]
+
+            response = process_whatsapp_message(message)
+
+            if response:
+                enviar_mensaje_whatsapp(numero_telefono, response)
+
+            return jsonify({"status": "ok"}), 200
+
+        except Exception as e:
+            print(f"❌ Error webhook: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error"}), 500
+        
+
 @app.route('/api/notificacion', methods=['POST'])
 def recibir_notificacion():
     """
-    Endpoint MEJORADO que agrupa notificaciones y envía plantilla única de WhatsApp
-    Soporta: documentos_inactivos_masivo, documentos_en_stand_by_masivo, 
-             documentos_en_firma_masivo, documentos_antiguos_masivo
+    Recibe notificaciones del backend, las almacena y envía plantilla WhatsApp.
+    Guarda documentos en notification_manager (para consultas futuras por tipo)
+    y pre-carga en conversation_memory (para selección inmediata si el usuario responde).
     """
     try:
-        data = request.get_json()
-        
-        tipo = data.get('tipo')
+        data     = request.get_json()
+        tipo     = data.get('tipo')
         cantidad = data.get('cantidad', 0)
         documentos = data.get('documentos', [])
-        
+
         if not documentos:
             return jsonify({"error": "No hay documentos en el payload"}), 400
-        
 
         plantillas_config = {
-            'documentos_inactivos_masivo': {
-                'nombre': 'alerta_documentos_inactivos',
-                'descripcion': 'documentos sin gestión por más de 15 días'
-            },
-            'documentos_en_stand_by_masivo': {
-                'nombre': 'documentos_stand_by',
-                'descripcion': 'documentos en stand by'
-            },
-            'documentos_en_firma_masivo': {
-                'nombre': 'documento_sin_firma',
-                'descripcion': 'documentos con firma pendiente por más de 3 días'
-            },
-            'documentos_antiguos_masivo': {
-                'nombre': 'documento_sin_respuesta',
-                'descripcion': 'documentos sin respuesta por más de 30 días'
-            }
+            'documentos_inactivos_masivo':    {'nombre': 'alerta_documentos_inactivos'},
+            'documentos_en_stand_by_masivo':  {'nombre': 'documentos_stand_by'},
+            'documentos_en_firma_masivo':     {'nombre': 'documento_sin_firma'},
+            'documentos_antiguos_masivo':     {'nombre': 'documento_sin_respuesta'},
         }
 
-        
-        #  AGRUPAR DOCUMENTOS POR DESTINATARIO
+        # ── Agrupar por destinatario ──────────────────────────────────────────
         documentos_por_usuario = defaultdict(list)
-        
         for doc_data in documentos:
-            destinatarios = doc_data.get('destinatarios', [])
-            
-            for telefono in destinatarios:
-                telefono_normalizado = normalizar_numero_whatsapp(telefono)
-                usuario_info = numero_autorizado(telefono_normalizado)
-                if usuario_info:
-                    documentos_por_usuario[telefono_normalizado].append(doc_data)
+            for telefono in doc_data.get('destinatarios', []):
+                telefono_norm = normalizar_numero_whatsapp(telefono)
+                if numero_autorizado(telefono_norm):
+                    documentos_por_usuario[telefono_norm].append(doc_data)
                 else:
-                    print(f"⚠️ Número no autorizado: {telefono_normalizado}")
-        
-        
-        #  ENVIAR NOTIFICACIÓN AGRUPADA A CADA USUARIO
-        resultados = {
-            'exitosos': 0,
-            'fallidos': 0,
-            'detalles': []
-        }
-        
+                    print(f"⚠️ Número no autorizado: {telefono_norm}")
+
+        resultados = {'exitosos': 0, 'fallidos': 0, 'detalles': []}
+
         for telefono, docs_usuario in documentos_por_usuario.items():
             try:
-                usuario_info = numero_autorizado(telefono)
+                usuario_info   = numero_autorizado(telefono)
                 nombre_usuario = usuario_info.get('nombres', 'Usuario') if usuario_info else 'Usuario'
-                cantidad_docs = len(docs_usuario)
-                
-                print(f"📱 Procesando notificación para {telefono} ({cantidad_docs} docs)")
-                
-                #  ALMACENAR NOTIFICACIONES EN MEMORIA
-                notification_data = {
-                    "tipo": tipo,
-                    "cantidad": cantidad_docs,
-                    "documentos": docs_usuario
-                }
-                
+                cantidad_docs  = len(docs_usuario)
+
+                print(f"📱 Notificación para {telefono} ({cantidad_docs} docs, tipo={tipo})")
+
+                # ── 1. Guardar en notification_manager ────────────────────────
                 notification_group = notification_manager.store_notifications(
                     phone_number=telefono,
-                    notifications_data=notification_data
+                    notifications_data={"tipo": tipo, "cantidad": cantidad_docs, "documentos": docs_usuario}
                 )
-                
                 if not notification_group:
-                    raise Exception("Error almacenando notificaciones")
-                
-                
-                # Verificar si el tipo está soportado
+                    raise Exception("Error almacenando en notification_manager")
+
+                # ── 2. Pre-cargar en conversation_memory ──────────────────────
+                # Así cuando el usuario responda al botón, flow.py ya tiene los docs
+                tipo_interno = notification_manager._identificar_tipo(tipo)
+                conversation_memory.set_conversation_documents(
+                    phone_number=telefono,
+                    documents=docs_usuario,
+                    source_intent=f"notificacion_{tipo_interno}",
+                    source_query=f"Notificación entrante: {tipo}"
+                )
+                s = conversation_memory._get_or_create_state(telefono)
+                s["pending_notification_tipo"] = tipo_interno
+                conversation_memory._b.set_state(telefono, s)
+                print(f"📚 {cantidad_docs} docs pre-cargados en conversation_memory para {telefono}")
+
+                # ── 3. Enviar plantilla WhatsApp ──────────────────────────────
                 if tipo not in plantillas_config:
-                    print(f"⚠️ Tipo de notificación no soportado: {tipo}")
+                    print(f"⚠️ Tipo no soportado para plantilla: {tipo}")
                     resultados['fallidos'] += 1
                     resultados['detalles'].append({
-                        'telefono': telefono,
-                        'status': 'error',
+                        'telefono': telefono, 'status': 'error',
                         'error': f'Tipo no soportado: {tipo}'
                     })
                     continue
-                
-                #  ENVIAR PLANTILLA DE WHATSAPP
-                config = plantillas_config[tipo]
-                
-          
-                parametros = [
-                    str(cantidad_docs),  # {{1}} - cantidad en título
-                    nombre_usuario,      # {{2}} - nombre del usuario
-                    str(cantidad_docs)   # {{3}} - cantidad en cuerpo
-                ]
-                
-                # Enviar plantilla de WhatsApp Business
+
+                config     = plantillas_config[tipo]
+                parametros = [str(cantidad_docs), nombre_usuario, str(cantidad_docs)]
+
                 resultado = enviar_plantilla_whatsapp(
                     numero=telefono,
                     nombre_plantilla=config['nombre'],
                     parametros=parametros,
                     idioma="es_PE"
                 )
-                
+
                 if resultado.get('status') == 'success':
-                    # Guardar el message_id de la plantilla
                     notification_manager.template_message_ids[notification_group['id']] = resultado.get('message_id')
-                    
                     resultados['exitosos'] += 1
                     resultados['detalles'].append({
-                        'telefono': telefono,
-                        'documentos': cantidad_docs,
-                        'status': 'success',
-                        'tipo': tipo,
-                        'plantilla': config['nombre'],
+                        'telefono':        telefono,
+                        'documentos':      cantidad_docs,
+                        'status':          'success',
+                        'tipo':            tipo,
+                        'plantilla':       config['nombre'],
                         'notification_id': notification_group['id'],
-                        'message_id': resultado.get('message_id')
+                        'message_id':      resultado.get('message_id')
                     })
-                    print(f"✅ Plantilla '{config['nombre']}' enviada correctamente a {telefono}")
+                    print(f"✅ Plantilla '{config['nombre']}' enviada a {telefono}")
                 else:
                     resultados['fallidos'] += 1
                     resultados['detalles'].append({
-                        'telefono': telefono,
-                        'documentos': cantidad_docs,
-                        'status': 'error',
-                        'tipo': tipo,
+                        'telefono': telefono, 'documentos': cantidad_docs,
+                        'status': 'error', 'tipo': tipo,
                         'plantilla': config['nombre'],
                         'error': resultado.get('message', 'Error desconocido')
                     })
-                    print(f"❌ Error enviando plantilla '{config['nombre']}' a {telefono}: {resultado.get('message')}")
- 
+                    print(f"❌ Error plantilla '{config['nombre']}' → {telefono}: {resultado.get('message')}")
+
             except Exception as e:
-                print(f"❌ Error procesando usuario {telefono}: {e}")
-                import traceback
-                traceback.print_exc()
-                
+                print(f"❌ Error procesando {telefono}: {e}")
+                import traceback; traceback.print_exc()
                 resultados['fallidos'] += 1
-                resultados['detalles'].append({
-                    'telefono': telefono,
-                    'status': 'error',
-                    'error': str(e)
-                })
-        
+                resultados['detalles'].append({'telefono': telefono, 'status': 'error', 'error': str(e)})
+
         return jsonify({
-            'status': 'success',
-            'message': f'Procesadas {resultados["exitosos"]} notificaciones exitosas, {resultados["fallidos"]} fallidas',
-            'tipo': tipo,
-            'total_usuarios': len(documentos_por_usuario),
+            'status':           'success',
+            'message':          f'{resultados["exitosos"]} exitosas, {resultados["fallidos"]} fallidas',
+            'tipo':             tipo,
+            'total_usuarios':   len(documentos_por_usuario),
             'total_documentos': cantidad,
-            'resultados': resultados,
-            'usa_plantilla': True,
-            'plantilla_enviada': tipo in plantillas_config
+            'resultados':       resultados,
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Error en recibir_notificacion: {e}")
-        import traceback
-        traceback.print_exc()
+        import traceback; traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
-
+    
 @app.route('/api/notificacion/derivado', methods=['POST'])
 def recibir_notificacion_derivado():
     """
@@ -776,13 +380,7 @@ def recibir_notificacion_derivado():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
-   
-def schedule_cleanup():
-    limpiar_notificaciones_antiguas()
-    # Programar siguiente limpieza
-    timer = threading.Timer(1800, schedule_cleanup)  # 30 minutos
-    timer.daemon = True
-    timer.start()
+
 
 # Iniciar limpieza automática
 schedule_cleanup()
@@ -790,8 +388,6 @@ schedule_cleanup()
 if __name__ == '__main__':
     print("🚀 Iniciando Chatbot WhatsApp con Memoria Conversacional Avanzada...")
     print("=" * 70)
-    print(f"🧠 Memoria: {conversation_memory.max_turns} turnos máx, {conversation_memory.session_timeout/60:.0f}min timeout")
-    print(f"📚 Cache documentos: {conversation_memory.max_documents_cache} docs máx por usuario")
     print(f"🔄 Estados soportados: initial, awaiting_choice, awaiting_verification, filtered_search")
     print(f"📞 Funciones especiales: contactar_encargado, algolia_search (no afectan flujo)")
     print("=" * 70)
