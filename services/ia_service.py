@@ -481,168 +481,126 @@ Recuerda que tienes un máximo de 300 tokens para responder.
         return f"❌ Error inesperado IA: {e}"
 
 
-def seleccionar_respuesta(texto_usuario, context=None, documentos=None, conversation_state=None):
-    """Función para seleccionar documento de lista con estados integrados"""
+
+def seleccionar_respuesta(texto_usuario: str, documentos=None, context=None) -> dict | None:
+    """
+    Llama a Gemini para identificar qué documento eligió el usuario.
+
+    Retorna dict con:
+        {
+            "intent": "select_document" | "confirmar_seleccion" | "nueva_consulta",
+            "parameters": {
+                "posicion_lista": int | null,
+                "codigo_sistema": str | null,
+                "numero_documento": str | null,
+                "document_id": str | null,
+                "confirmacion_positiva": bool | null,
+                "nueva_consulta": bool,
+            }
+        }
+    O None si Gemini falla.
+    """
     try:
-        print("DOCUMENTOS:", documentos)
-        context_info = ""
-        state_info = ""
-        
-        if context and context.get("is_follow_up"):
-            context_info += f"\n🧠 CONTEXTO CONVERSACIONAL ACTIVO:\n"
-            if context.get("last_intent"):
-                context_info += f"- Última intención: {context['last_intent']}\n"
-            if context.get("recent_documents"):
-                context_info += f"- Documentos mencionados: {', '.join(context['recent_documents'][:3])}\n"
+        # Resumen compacto para no saturar el contexto
+        resumen = []
+        for i, doc in enumerate(documentos[:20] if documentos else []):
+            inner = doc.get("documento", doc)
+            resumen.append({
+                "posicion":         i + 1,
+                "codigo_sistema":   inner.get("codigo_sistema", ""),
+                "numero_documento": inner.get("numero_documento", ""),
+                "asunto":           (inner.get("asunto") or "")[:80],
+                "tipo":             inner.get("tipo", ""),
+            })
 
-        if conversation_state:
-            state_info = f"""
-🔄 ESTADO CONVERSACIÓN: {conversation_state.get('state', 'unknown')}
-- ¿Esperando confirmación?: {conversation_state.get('awaiting_confirmation', False)}
-- Tipo confirmación: {conversation_state.get('confirmation_type', 'N/A')}
-"""
+        print(f"SELECCIÓN DE RESPUESTA documentos: {len(resumen)}")
 
-        print("SELECCIÓN DE RESPUESTA documentos:", len(documentos) if documentos else 0)
-        
         prompt = f"""
-Eres un selector inteligente de documentos con ESTADOS DE CONVERSACIÓN.
+Eres un selector de documentos. El usuario escribió: "{texto_usuario}"
 
-{state_info}
+DOCUMENTOS DISPONIBLES:
+{json.dumps(resumen, ensure_ascii=False, indent=2)}
 
-{context_info}
+Identifica cuál documento eligió. Puede ser:
+- Número de posición: "1", "2", "3" → posicion_lista
+- Código parcial o completo: "149", "PR-001640" → codigo_sistema / numero_documento
+- Parte del asunto o tipo → numero_documento del que coincida
+- "sí/correcto" → confirmacion_positiva: true
+- "no/otro" → confirmacion_positiva: false
 
-🎯 FUNCIÓN PRINCIPAL:
- MODO BÚSQUEDA EN LISTA GUARDADA:
-                El usuario está seleccionando de una lista previamente mostrada.
-                Los resultados disponibles son: {documentos}
-                
-                Se pide al usuario que seleccione uno de los resultados
-                Instrucciones: 
-                - Esto lo puede hacer escribiendo un número (1,2,3...) esto haciendo referencia al orden de la lista
-                Ejemplo: Si se escribe 1, entonces está eligiendo el primer elemento de la lista.
-                - Si no lo hace de esa manera puede buscar o hacer referencia al valor cuyo clave es codigo_sistema, tipo, numero_documento, asunto. (Sólo se busca por esos valores)
-                Nota: No tiene que escribir exactamente el valor, debes entenderlo o puede estar incluido, por ejemplo si su numero documento es 30610-COS-CAR-C01-2025-149, entonces el usuario escribe
-                "149" y debes encontrarlo. Cabe resaltar que si en esta selección se encuentra mas de un posible resultado, tienes que devolver todas las que coincidan (idealmente, solo deberia retornar una,
-                pero si el usuario no pone algo tan especifico entonces no hay otra manera que devolver todo lo que se coincidió).
+Si no encuentra ninguno, devuelve intent: "error".
 
+IMPORTANTE: Responde SOLO JSON válido, sin texto adicional.
 
-📋 CRITERIOS DE SELECCIÓN:
-
-1️⃣ POR POSICIÓN:
-- Usuario escribe número: "1", "2", "3" etc.
-- Corresponde a la posición en la lista (1 = primer documento), en su defecto puedes buscar por el "cache_id" y te guías del último número +1.
-Ejemplo: Si pongo 1, debería salir el que tenga ->'cache_id': '51994018002_1758298904_0' (Lo importante es el último dígito)
-
-2️⃣ POR IDENTIFICACIÓN:
-- Usuario menciona código: "PR-001640", "148", "149"
-- Usuario menciona asunto: "valorización", "hospital"
-- Usuario menciona tipo: "carta", "oficio"
-- Buscar en campos: codigo_sistema, tipo, numero_documento, asunto, numero_consecutivo
-
-3️⃣ CONFIRMACIÓN/NEGACIÓN:
-- "sí/si/correcto/exacto/ese" → confirmar_seleccion (positiva)
-- "no/incorrecto/otro/diferente" → confirmar_seleccion (negativa)
-
-⚠️ REGLAS ESPECIALES:
-- Si encuentra MÚLTIPLES coincidencias → devolver todas
-- Si NO encuentra coincidencias → indicar error
-- SOLO buscar en los documentos proporcionados, NO en toda la base
-- Si usuario hace consulta nueva → marcar "nueva_consulta": true
-
-EJEMPLOS:
-Usuario: "1" → Selecciona documento en posición 1 o cache_id con último número ".._0"
-Usuario: "2" → Selecciona documento en posición 2 o cache_id con último número ".._1"
-Usuario: "149" → Busca "149" en todos los campos del documento  
-Usuario: "valorización" → Busca en asuntos que contengan "valorización"
-Usuario: "sí" → Confirmación positiva
-Usuario: "no es ese" → Confirmación negativa
-
-ENTRADA DEL USUARIO: "{texto_usuario}"
-
-Responde SOLO JSON válido:
 {{
-    "intent": "select_document" | "confirmar_seleccion" | "nueva_consulta",
+    "intent": "select_document",
     "parameters": {{
-        "document_id": "id del diccionario",
-        "codigo_sistema":"codigo_sistema"(siempre tiene este formato:PR-000801 ),
-        "tipo": "tipo del documento (Carta, Solicitud ...)",
-        "numero_documento": "numero_documento",
-        "asunto": "asunto", 
-        "estado_flujo": "estado_flujo",
-        "prioridad_nombre": "prioridad_nombre",
-        "responsable_proyecto":responsable_proyecto,
-        "encargados":encargados,
-        "proyecto_nombre": "proyecto_nombre",
-        "fecha_ingreso": "fecha_ingreso",
-        "fecha_limite":"fecha_limite",
-        "posicion_lista": numero_si_es_seleccion,
-        "confirmacion_positiva": true/false/null,
-        "nueva_consulta": true/false,
-        "search_in_saved": true,
-        "error": "mensaje_si_no_encuentra"
-
-    }},
-    "confidence": 0.95
+        "posicion_lista": null,
+        "codigo_sistema": null,
+        "numero_documento": null,
+        "document_id": null,
+        "confirmacion_positiva": null,
+        "nueva_consulta": false
+    }}
 }}
 """
 
         headers = {
             "Content-Type": "application/json",
-            "X-goog-api-key": GEMINI_API_KEY
+            "X-goog-api-key": GEMINI_API_KEY,
         }
-        
         data = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 1000,
-                "responseMimeType": "application/json"
-            }
+                "maxOutputTokens": 300,
+                "responseMimeType": "application/json",   # ← fuerza JSON válido
+            },
         }
-        
-        response = requests.post(GEMINI_URL, headers=headers, json=data, timeout=60)
-        
-        if response.status_code == 200:
-            result = response.json()
-            try:
-                content = result["candidates"][0]["content"]["parts"][0].get("text", "").strip()
-                print("🔎 RAW Gemini:", content)
 
-                if not content:
-                    print("❌ Gemini devolvió respuesta vacía")
-                    return None
-                    
-                if content.startswith("```"):
-                    content = content.strip("`")
-                    if content.lower().startswith("json"):
-                        content = content[4:].strip()
-                
-                intent_data = json.loads(content)
-                if "documentos_encontrados" not in intent_data:
-                    intent_data["documentos_encontrados"] = {}
+        response = requests.post(GEMINI_URL, headers=headers, json=data, timeout=15)
 
-                intent_data["documentos_encontrados"] = documentos
-                print(f"✅ Selección procesada: {intent_data.get('intent')} - encontrados: {len(intent_data.get('documentos_encontrados', []))}")
-                return intent_data
-                
-            except json.JSONDecodeError as e:
-                print("❌ Gemini JSON inválido:", e, content[:200])
-                return None
-                
-        else:
-            print(f"❌ Gemini HTTP {response.status_code}: {response.text}")
+        if response.status_code != 200:
+            print(f"❌ Gemini HTTP {response.status_code}")
             return None
-            
-    except Exception as e:
-        print(f"❌ Error Gemini selección: {e}")
+
+        raw = response.json()["candidates"][0]["content"]["parts"][0].get("text", "").strip()
+        print(f"🔎 RAW Gemini: {raw[:200]}")
+
+        if not raw:
+            return None
+
+        # ── Limpiar posibles artifacts de formato ────────────────────────────
+        cleaned = _limpiar_json(raw)
+        return json.loads(cleaned)
+
+    except json.JSONDecodeError as e:
+        print(f"❌ Gemini JSON inválido: {e}")
         return None
-    
+    except Exception as e:
+        print(f"❌ Error seleccionar_respuesta: {e}")
+        return None
+
+
+def _limpiar_json(texto: str) -> str:
+    """
+    Limpia el texto de Gemini antes de parsear:
+    - Quita bloques ```json ... ```
+    - Reemplaza valores Python (None, True, False) por JSON válido
+    - Elimina trailing commas antes de } o ]
+    """
+    # Quitar markdown code fences
+    texto = re.sub(r"```(?:json)?\s*", "", texto).strip().rstrip("`").strip()
+
+    # Python None/True/False → JSON null/true/false
+    texto = re.sub(r'\bNone\b',  'null',  texto)
+    texto = re.sub(r'\bTrue\b',  'true',  texto)
+    texto = re.sub(r'\bFalse\b', 'false', texto)
+
+    # Trailing commas: ,\n} o ,\n]
+    texto = re.sub(r',\s*([}\]])', r'\1', texto)
+
+    return texto
 
 
 

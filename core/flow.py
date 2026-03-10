@@ -1,5 +1,13 @@
 """
 core/flow.py
+────────────
+FSM de conversación. Responsabilidades:
+  1. Dado estado + mensaje → devuelve intent_data estandarizado
+  2. En AWAITING_SELECTION: resuelve selección con Python puro → Gemini como fallback
+  3. En INITIAL/SEARCHING: delega al router Gemini (ia/router.py)
+  4. Detecta patrones numéricos obvios sin LLM
+
+NO formatea respuestas, NO accede a DB, NO envía mensajes.
 """
 
 import re
@@ -7,10 +15,11 @@ from typing import Any, Dict, List, Optional
 
 from core.conversationMemory import conversation_memory
 from core.states import State
-from services.ia_service import seleccionar_respuesta
+
 _POSITIVAS = {"si", "sí", "yes", "correcto", "exacto", "ese", "perfecto", "está bien", "ok", "dale"}
 _NEGATIVAS = {"no", "nope", "incorrecto", "otro", "diferente", "no es", "nop"}
 
+# Intents del router que mapean directamente a búsqueda en DB
 _INTENTS_BUSQUEDA = {
     "seguimiento_por_numero_documento",
     "seguimiento_por_codigo",
@@ -41,6 +50,7 @@ def detectar_intencion_con_contexto(
 
     print(f"🔀 FSM estado={estado} | msg='{texto[:50]}'")
 
+    # Reset manual siempre tiene prioridad
     if texto.lower() in {"hola", "hello", "hi"}:
         conversation_memory._reset(phone_number)
         return _intent("saludo", reset_triggered=True)
@@ -51,25 +61,56 @@ def detectar_intencion_con_contexto(
     if estado == State.AWAITING_CONFIRMATION:
         return _handle_awaiting_confirmation(texto, phone_number)
 
+    # INITIAL y SEARCHING → router (con cache-first en SEARCHING)
     return _handle_free(texto, conversation_context, conversation_state, phone_number)
 
+
+# ── HANDLERS POR ESTADO ───────────────────────────────────────────────────────
 
 def _handle_awaiting_selection(
     texto: str,
     phone_number: str,
     context: Dict,
 ) -> Dict[str, Any]:
-
+    """
+    Usuario eligiendo de una lista.
+    Prioridad: Python puro → sublista si ambiguo → Gemini → error.
+    No sale de AWAITING_SELECTION salvo reset.
+    """
     documentos = conversation_memory.get_conversation_documents(phone_number)
 
     if not documentos:
         print("⚠️  AWAITING_SELECTION sin docs → delegando a free handler")
-        return _handle_free(texto, context, {"state": State.INITIAL})
+        return _handle_free(texto, context, {"state": State.INITIAL}, phone_number)
 
-    doc = _resolver_seleccion(texto, documentos)
-    if doc is not None:
-        return _intent("seleccionar_documento", documento_seleccionado=doc, resultados=[doc])
+    # 1. Match Python
+    resultado = _resolver_seleccion(texto, documentos)
 
+    # 1a. Match único → seleccionar
+    if resultado is not None and not isinstance(resultado, dict) or (
+        isinstance(resultado, dict) and not resultado.get("_ambiguo")
+    ):
+        if resultado is not None:
+            return _intent("seleccionar_documento",
+                           documento_seleccionado=resultado, resultados=[resultado])
+
+    # 1b. Múltiples matches → mostrar sublista filtrada
+    if isinstance(resultado, dict) and resultado.get("_ambiguo"):
+        sub = resultado["_matches"]
+        print(f"📋 Sublista ambigua: {len(sub)} docs para '{texto}'")
+        # Actualizar cache con la sublista para que siguiente selección sea más precisa
+        conversation_memory.set_conversation_documents(
+            phone_number, sub,
+            source_intent="sublista_filtrada", source_query=texto
+        )
+        return _intent(
+            "sublista_filtrada",
+            resultados=sub,
+            query=texto,
+            total=len(sub),
+        )
+
+    # 2. Fallback Gemini (solo si Python no encontró nada)
     doc_ia = _resolver_seleccion_con_ia(texto, documentos)
     if doc_ia is not None:
         return _intent("seleccionar_documento", documento_seleccionado=doc_ia, resultados=[doc_ia])
@@ -96,16 +137,26 @@ def _handle_awaiting_confirmation(texto: str, phone_number: str) -> Dict[str, An
         return _intent("confirmar_seleccion", confirmacion_positiva=True)
     if any(n in texto_lower for n in _NEGATIVAS):
         return _intent("confirmar_seleccion", confirmacion_positiva=False)
+    # No es sí/no → nueva consulta
     return _handle_free(texto, {}, {"state": State.INITIAL})
 
-def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_number:str = None) -> Dict[str, Any]:
+
+def _handle_free(
+    texto: str,
+    context: Dict,
+    conversation_state: Dict,
+    phone_number: str = None,
+) -> Dict[str, Any]:
     """
     Estado INITIAL o SEARCHING.
+    En SEARCHING con lista activa: intenta match en cache antes de ir a DB.
+    Orden: cache-first → patrón numérico → follow-up local → router Gemini → fallback.
     """
-    estado = conversation_state.get("state", State.INITIAL)
+    estado     = conversation_state.get("state", State.INITIAL)
     tiene_lista = conversation_state.get("has_document_list", False)
 
-    if estado == State.SEARCHING and tiene_lista and phone_number: 
+    # 0-pre. SEARCHING + lista activa → intentar match en cache primero
+    if estado == State.SEARCHING and tiene_lista and phone_number:
         documentos = conversation_memory.get_conversation_documents(phone_number)
         if documentos:
             print(f"📚 Modo filtrado: {len(documentos)} docs")
@@ -113,19 +164,24 @@ def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_numb
             if doc is not None:
                 print(f"✅ Campo único: '{texto}'")
                 return _intent("seleccionar_documento", documento_seleccionado=doc, resultados=[doc])
+
+            # Múltiples matches → sublista (no ir a DB todavía)
             tl     = texto.lower()
             tokens = [tok for tok in re.findall(r'[\w-]+', texto, re.IGNORECASE) if len(tok) >= 2]
             if tokens:
-                sub = [doc for doc in documentos if any (
-                    tok.lower() in " ".join([
-                        _extraer_campos_doc(doc)["codigo_sistema"],
-                        _extraer_campos_doc(doc)["numero_documento"],
-                        _extraer_campos_doc(doc)["asunto"],
-                        _extraer_campos_doc(doc)["encargado"],
-                    ]).lower()
-                    for tok in tokens
-                )]
-            if sub:
+                sub = [
+                    doc for doc in documentos
+                    if any(
+                        tok.lower() in " ".join([
+                            _extraer_campos_doc(doc)["codigo_sistema"],
+                            _extraer_campos_doc(doc)["numero_documento"],
+                            _extraer_campos_doc(doc)["asunto"],
+                            _extraer_campos_doc(doc)["encargado"],
+                        ]).lower()
+                        for tok in tokens
+                    )
+                ]
+                if sub:
                     print(f"📋 Sublista: {len(sub)} docs filtrados por '{texto}'")
                     return _intent(
                         "buscar_en_lista",
@@ -133,8 +189,11 @@ def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_numb
                         resultados=sub,
                         total=len(sub),
                     )
+
+            # Sin match en cache → caer a búsqueda global
             print(f"🔍 Sin match en cache, pasando a búsqueda global...")
 
+    # 0. Patrones numéricos obvios — sin LLM, sin ambigüedad
     patron = _detectar_patron_numerico(texto)
     if patron:
         print(f"✅ Patrón numérico sin LLM: {patron['intent']} → '{patron['parametro']}'")
@@ -146,6 +205,7 @@ def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_numb
         print(f"✅ Follow-up local: {follow_up['intent']}")
         return follow_up
 
+    # 2. Router principal (ia/router.py → Gemini)
     try:
         from ia.router import router
         result = router(texto, context, conversation_state)
@@ -154,6 +214,7 @@ def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_numb
     except Exception as e:
         print(f"⚠️  Error router Gemini: {e}")
 
+    # 3. Fallback básico
     try:
         from services.ia_service import detectar_intencion_optimizado
         return detectar_intencion_optimizado(texto)
@@ -163,6 +224,7 @@ def _handle_free( texto: str, context: Dict, conversation_state: Dict,phone_numb
     return _intent("error", error="No pude procesar tu mensaje")
 
 
+# ── DETECCIÓN DE PATRONES NUMÉRICOS (sin LLM) ────────────────────────────────
 
 def _detectar_patron_numerico(texto: str) -> Optional[Dict[str, Any]]:
     """
@@ -171,21 +233,26 @@ def _detectar_patron_numerico(texto: str) -> Optional[Dict[str, Any]]:
     """
     t = texto.strip()
 
+    # NNN-YYYY  (ej: 191-2025, 1912-2025)
     if re.match(r'^\d{2,6}-20\d{2}$', t):
         return _intent("seguimiento_por_consecutivo", parametro=t)
 
+    # PR-NNNNNN  (código sistema)
     if re.match(r'^PR-\d+$', t, re.IGNORECASE):
         return _intent("seguimiento_por_codigo", parametro=t.upper())
 
+    # Número largo solo  (5+ dígitos → probablemente consecutivo)
     if re.match(r'^\d{5,}$', t):
         return _intent("seguimiento_por_consecutivo", parametro=t)
 
+    # Código con guiones (ej: 10922-MEP-CMA-PR-114-2025)
     if re.match(r'^[\w]+-[\w]+-[\w-]+$', t) and len(t) > 8:
         return _intent("seguimiento_por_numero_documento", parametro=t)
 
     return None
 
 
+# ── RESOLUCIÓN DE SELECCIÓN (Python puro) ─────────────────────────────────────
 
 def _extraer_campos_doc(doc: Dict) -> Dict:
     """Normaliza doc independientemente de si los campos están en top-level o anidados."""
@@ -207,9 +274,16 @@ def _extraer_campos_doc(doc: Dict) -> Dict:
 
 
 def _resolver_seleccion(texto: str, documentos: List[Dict]) -> Optional[Dict]:
-    t = texto.strip()
+    """
+    Match sin IA. Prioridad: posición → ordinal → campos.
+    Retorna:
+      - dict  → match único
+      - None  → sin match o ambiguo (→ Gemini o sublista)
+    """
+    t  = texto.strip()
     tl = t.lower()
 
+    # 1. Número exacto → posición
     if re.match(r'^\d+$', t):
         idx = int(t) - 1
         if 0 <= idx < len(documentos):
@@ -217,6 +291,7 @@ def _resolver_seleccion(texto: str, documentos: List[Dict]) -> Optional[Dict]:
             return documentos[idx]
         return None
 
+    # 2. Ordinal textual
     ordinales = {"primero": 0, "primera": 0, "segundo": 1, "segunda": 1,
                  "tercero": 2, "tercera": 2, "cuarto": 3, "cuarta": 3,
                  "quinto": 4, "quinta": 4}
@@ -225,60 +300,72 @@ def _resolver_seleccion(texto: str, documentos: List[Dict]) -> Optional[Dict]:
             print(f"✅ Ordinal '{palabra}'")
             return documentos[idx]
 
-    tokens = [tok for tok in re.findall(r'[\w-]+', t, re.IGNORECASE) if len(tok) >= 2]
-    if not tokens:
-        return None
+    # 3. Búsqueda por campos — tokens separados por guión o espacio
+    #    "10922-mep" → tokens ["10922", "mep"]  (para buscar substring independiente)
+    tokens_split = [tok for tok in re.split(r'[-_\s]+', t) if len(tok) >= 2]
+    tokens_full  = [t]  # también buscar el texto completo como substring
 
-    matches = [
-    doc for doc in documentos
-    if all(
-        tok.lower() in " ".join([
-            str(_extraer_campos_doc(doc).get("codigo_sistema") or ""),
-            str(_extraer_campos_doc(doc).get("numero_documento") or ""),
-            str(_extraer_campos_doc(doc).get("asunto") or ""),
-            str(_extraer_campos_doc(doc).get("encargado") or ""),
+    def _campos_str(doc: Dict) -> str:
+        c = _extraer_campos_doc(doc)
+        return " ".join([
+            c["codigo_sistema"],
+            c["numero_documento"],
+            c["asunto"],
+            c["encargado"],
         ]).lower()
-        for tok in tokens
-    )
-]
 
-    if len(matches) == 1:
-        print(f"✅ Campo único: '{t}'")
-        return matches[0]
+    # Primero: todos los tokens fragmentados deben aparecer (más tolerante)
+    if tokens_split:
+        matches_split = [d for d in documentos
+                         if all(tok.lower() in _campos_str(d) for tok in tokens_split)]
+        if len(matches_split) == 1:
+            print(f"✅ Campo único (split): '{t}'")
+            return matches_split[0]
+        if len(matches_split) > 1:
+            # Intentar exacto primero
+            exactos = [d for d in matches_split
+                       if tl == _extraer_campos_doc(d)["numero_documento"].lower()
+                       or tl == _extraer_campos_doc(d)["codigo_sistema"].lower()]
+            if len(exactos) == 1:
+                print(f"✅ Exacto: '{t}'")
+                return exactos[0]
+            print(f"⚠️  Ambiguo '{t}': {len(matches_split)} matches")
+            return {"_ambiguo": True, "_matches": matches_split}   # ← sublista
 
-    if len(matches) > 1:
-        # Intentar match exacto
-        exactos = [
-            d for d in matches
-            if tl == _extraer_campos_doc(d)["numero_documento"].lower()
-            or tl == _extraer_campos_doc(d)["codigo_sistema"].lower()
-        ]
-        if len(exactos) == 1:
-            print(f"✅ Exacto: '{t}'")
-            return exactos[0]
-        print(f"⚠️  Ambiguo '{t}': {len(matches)} matches → Gemini")
-        return None
+    # Luego: texto completo como substring
+    matches_full = [d for d in documentos if t.lower() in _campos_str(d)]
+    if len(matches_full) == 1:
+        print(f"✅ Campo substring: '{t}'")
+        return matches_full[0]
+    if len(matches_full) > 1:
+        print(f"⚠️  Ambiguo full '{t}': {len(matches_full)} matches")
+        return {"_ambiguo": True, "_matches": matches_full}
 
     return None
 
 
 def _resolver_seleccion_con_ia(texto: str, documentos: List[Dict]) -> Optional[Dict]:
+    """Fallback Gemini para selecciones que Python no resolvió."""
     try:
+        from ia.seleccion import seleccionar_respuesta
 
+        print(f"🤖 Gemini selección: {len(documentos[:20])} docs")
         resultado = seleccionar_respuesta(texto, documentos=documentos[:20])
 
         if not resultado:
             return None
 
         params = resultado.get("parameters", {})
-    
+
+        # 1. Por posición_lista
         pos = params.get("posicion_lista")
         if pos is not None:
             idx = int(pos) - 1
             if 0 <= idx < len(documentos):
                 print(f"✅ Gemini: posición {idx + 1}")
                 return documentos[idx]
-            
+
+        # 2. Por codigo_sistema
         codigo = params.get("codigo_sistema")
         if codigo:
             for doc in documentos:
@@ -286,13 +373,15 @@ def _resolver_seleccion_con_ia(texto: str, documentos: List[Dict]) -> Optional[D
                     print(f"✅ Gemini: código {codigo}")
                     return doc
 
+        # 3. Por numero_documento
         numero = params.get("numero_documento")
         if numero:
             for doc in documentos:
                 if _extraer_campos_doc(doc)["numero_documento"].lower() == str(numero).lower():
                     print(f"✅ Gemini: número {numero}")
                     return doc
-                
+
+        # 4. Por document_id / cache_id
         doc_id = params.get("document_id")
         if doc_id:
             for doc in documentos:
@@ -301,12 +390,13 @@ def _resolver_seleccion_con_ia(texto: str, documentos: List[Dict]) -> Optional[D
                     print(f"✅ Gemini: id {doc_id}")
                     return doc
 
-
+        print(f"⚠️  Gemini no pudo resolver '{texto}'")
     except Exception as e:
         print(f"⚠️  Error Gemini selección: {e}")
     return None
 
 
+# ── FOLLOW-UP CONTEXTUAL (sin LLM) ────────────────────────────────────────────
 
 def _resolver_follow_up(texto: str, context: Dict) -> Optional[Dict[str, Any]]:
     if not context.get("is_follow_up"):
@@ -325,6 +415,7 @@ def _resolver_follow_up(texto: str, context: Dict) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ── NORMALIZACIÓN RESULTADO ROUTER ────────────────────────────────────────────
 
 def _normalizar_resultado_router(result: Dict[str, Any]) -> Dict[str, Any]:
     """Convierte salida de ia/router.py al formato estándar de procesar_mensaje."""
@@ -363,6 +454,7 @@ def _normalizar_resultado_router(result: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+# ── HELPER ────────────────────────────────────────────────────────────────────
 
 def _intent(intent: str, **kwargs) -> Dict[str, Any]:
     return {"intent": intent, "parametro": kwargs.pop("parametro", None), **kwargs}

@@ -1,19 +1,22 @@
+"""
+services/chatbot_service.py
+────────────────────────────
+Orquestador principal. Recibe mensaje + contexto → devuelve respuesta estructurada.
 
-import requests
-from services.db_service import *
-from config import *
-from core.constants import *
-from services.algolia_service import *
-from core.flow import *
-from utils.formatter import *
-from services.notificacion_services import *
-from handlers.notificacion_handler import procesar_notificacion_seleccionada, handle_notificacion
+Flujo:
+  procesar_mensaje
+    → detectar_intencion_con_contexto  (flow.py / ia/router.py)
+    → ejecutar handler según intent
+    → guardar turno en conversation_memory
+    → retornar dict {tipo, respuesta, intent, parameters, resultados}
+"""
+
 from typing import Any, Dict, List, Optional
+
 from core.conversationMemory import conversation_memory
+from core.flow import detectar_intencion_con_contexto
 from core.states import State, PREGUNTA_CONFIRMACION, PREGUNTA_SELECCION, MENSAJE_VOLVER_LISTA
 from core.constants import SUGERENCIAS_BUSQUEDA
-from services.ia_service import consultar_ia_con_memoria
-
 
 from services.notificacion_services import notification_manager
 from services.db_service import (
@@ -26,7 +29,9 @@ from services.db_service import (
 )
 from services.algolia_service import generar_respuesta_busqueda_algolia
 from utils.formatter import formatear_seguimiento
-from core.flow import detectar_intencion_con_contexto
+
+
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 def procesar_mensaje(
     mensaje: str,
@@ -57,6 +62,7 @@ def procesar_mensaje(
         if should_filter:
             print(f"📚 Modo filtrado: {len(documentos)} docs")
 
+        # ── Detección de intención ────────────────────────────────────────────
         intent_data = detectar_intencion_con_contexto(
             mensaje, numero_telefono, conversation_context, conversation_state
         )
@@ -90,6 +96,7 @@ def procesar_mensaje(
         return _error("❌ Disculpa, ocurrió un error interno. Inténtalo de nuevo.")
 
 
+# ── AWAITING SELECTION ────────────────────────────────────────────────────────
 
 def _handle_awaiting_selection(
     intent: str,
@@ -100,7 +107,11 @@ def _handle_awaiting_selection(
 ) -> Dict[str, Any]:
     """
     Maneja la selección de un documento de la lista.
+    El FSM (flow.py) ya resolvió el match; aquí solo formateamos y actualizamos estado.
 
+    Si la lista viene de una notificación (is_notification_flow=True) usa
+    procesar_notificacion_seleccionada para el formato detallado de alerta.
+    Si viene de búsqueda normal usa formatear_seguimiento.
     """
     if intent != "seleccionar_documento":
         print(f"⚠️  Intent '{intent}' inesperado en AWAITING_SELECTION")
@@ -110,6 +121,7 @@ def _handle_awaiting_selection(
     if not doc:
         return _error("❌ No encontré ese documento en la lista.")
 
+    # ── ¿Viene de notificación? ───────────────────────────────────────────────
     conv_state = conversation_memory.get_conversation_state(numero_telefono)
     es_notificacion = (
         conv_state.get("is_notification_flow", False)
@@ -117,10 +129,13 @@ def _handle_awaiting_selection(
     )
 
     if es_notificacion:
+        from services.notificacion_handler import procesar_notificacion_seleccionada
+        # Inyectar el doc ya resuelto en intent_data para que el handler lo use directamente
         intent_data["documento_seleccionado"] = doc
         intent_data["_doc_preresuelto"]       = True
         return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
 
+    # ── Búsqueda normal ───────────────────────────────────────────────────────
     formato   = formatear_seguimiento(doc)
     respuesta = formato["contenido"] if isinstance(formato, dict) else formato
     tipo      = formato.get("tipo", "detalle") if isinstance(formato, dict) else "detalle"
@@ -138,10 +153,13 @@ def _handle_awaiting_selection(
     }
 
 
-def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
+# ── DISPATCH DE INTENTS ───────────────────────────────────────────────────────
+
+def _dispatch(
+    intent: str, intent_data: Dict, parametro: Optional[str],
     mensaje: str, numero_telefono: str,
     conversation_context: Dict, conversation_state: Dict,
-    documentos: List[Dict], should_filter: bool, intent_forzado: Optional[str]
+    documentos: List[Dict], should_filter: bool, intent_forzado: Optional[str],
 ) -> Dict[str, Any]:
 
     if intent == "saludo":
@@ -152,6 +170,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
         es_positivo = parametros.get("confirmacion_positiva", False)
 
         if es_positivo:
+            # ── SÍ: volver a SEARCHING pero conservar la lista activa ────────
             conversation_memory.set_conversation_state(
                 numero_telefono, State.SEARCHING,
                 {
@@ -169,6 +188,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
                 "parameters": {},
             }
         else:
+            # ── NO: volver a AWAITING_SELECTION si hay lista ─────────────────
             if conversation_state.get("has_document_list"):
                 conversation_memory.set_conversation_state(
                     numero_telefono, State.AWAITING_SELECTION,
@@ -176,7 +196,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
                 )
                 return {
                     "tipo":      "seleccion",
-                #    "respuesta": "Entendido. ¿Cuál de los documentos te interesa?",
+                    "respuesta": "Entendido. ¿Cuál de los documentos te interesa?",
                     "intent":    intent,
                     "parameters": {},
                     "pregunta_seguimiento": PREGUNTA_SELECCION,
@@ -190,7 +210,6 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
                 "intent":    intent,
                 "parameters": {},
             }
-        
         return _handle_confirmacion(
             intent_data, conversation_state, documentos, numero_telefono
         )
@@ -199,6 +218,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
         return _handle_seleccion_directa(intent_data, documentos)
 
     if intent in ("contactar_encargado", "contactar_responsable"):
+        from services.contact_service import manejar_contacto_encargado
         resp = manejar_contacto_encargado(
             numero_telefono, conversation_context,
             tipo_contacto=intent.replace("contactar_", "")
@@ -207,15 +227,19 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
 
     if intent in ("listar_sin_respuesta", "listar_sin_firma",
                   "listar_inactivos", "listar_stand_by"):
-        return handle_notificacion(numero_telefono, intent)
+        from services.notificacion_handler import handle_notificaciones
+        return handle_notificaciones(numero_telefono, intent)
 
-    if intent == "buscar_en_lista":
+    # ── Búsqueda dentro del cache (SEARCHING + lista activa) ─────────────────
+    if intent in ("buscar_en_lista", "sublista_filtrada"):
         sub = intent_data.get("resultados", [])
+        query = intent_data.get("query", "")
         if not sub:
             return _mk("info", "No encontré documentos que coincidan. Escribe 'Hola' para nueva búsqueda.",
-                       "buscar_en_lista", {})
+                       intent, {})
         from utils.formatter import formatear_lista_documentos
-        respuesta_lista = formatear_lista_documentos(sub)
+        prefijo = f"🔍 Encontré *{len(sub)}* documentos con *'{query}'*:\n\n" if query else ""
+        respuesta_lista = prefijo + formatear_lista_documentos(sub)
         conversation_memory.set_conversation_state(
             numero_telefono, State.AWAITING_SELECTION,
             {"has_document_list": True, "last_search_results_count": len(sub),
@@ -224,7 +248,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
         return {
             "tipo":       "lista",
             "respuesta":  respuesta_lista,
-            "intent":     "buscar_en_lista",
+            "intent":     intent,
             "parameters": {"results_count": len(sub)},
             "resultados": sub,
             "pregunta_seguimiento": PREGUNTA_SELECCION,
@@ -246,6 +270,7 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
         )
 
     if intent == "seleccionar_notificacion":
+        from services.notificacion_handler import procesar_notificacion_seleccionada
         return procesar_notificacion_seleccionada(mensaje, numero_telefono, intent_data)
 
     if intent == "error_seleccion_notificacion":
@@ -261,8 +286,11 @@ def _dispatch(intent: str, intent_data: Dict, parametro: Optional[str],
         )
         return _mk("error_seleccion", str(msg), intent)
 
+    # Fallback
     return _handle_fallback(mensaje, conversation_context, conversation_state)
 
+
+# ── HANDLERS ESPECÍFICOS ──────────────────────────────────────────────────────
 
 def _handle_confirmacion(
     intent_data: Dict, conversation_state: Dict,
@@ -340,10 +368,12 @@ def _handle_seguimiento(
     }
 
     if should_filter:
+        from services.search_service import buscar_en_documentos_guardados
         seguimientos = buscar_en_documentos_guardados(documentos, parametro, intent)
     else:
         seguimientos = _fn[intent](parametro)
 
+    # Fallback cruzado
     if not seguimientos:
         if intent == "seguimiento_por_numero_documento":
             seguimientos = consultar_por_numero_consecutivo(parametro)
@@ -411,6 +441,7 @@ def _handle_fallback(
         return _mk("ayuda", resp, "ayuda")
 
     try:
+        from services.ia_service import consultar_ia_con_memoria
         consulta_e = _enriquecer_consulta(mensaje, conversation_context)
         respuesta  = consultar_ia_con_memoria(consulta_e, conversation_context, conversation_state)
         if respuesta:
@@ -422,6 +453,8 @@ def _handle_fallback(
 
     return _mk("error", f"❌ No entendí tu consulta.\n\n{SUGERENCIAS_BUSQUEDA}", "error")
 
+
+# ── RECUPERAR DOCUMENTOS ──────────────────────────────────────────────────────
 
 def _recuperar_documentos(numero_telefono: str, conversation_state: Dict) -> List[Dict]:
     """
@@ -448,6 +481,7 @@ def _recuperar_documentos(numero_telefono: str, conversation_state: Dict) -> Lis
     return docs
 
 
+# ── HELPERS ───────────────────────────────────────────────────────────────────
 
 def _mk(tipo: str, respuesta: str, intent: str,
         parameters: Dict = None, resultados: List = None) -> Dict[str, Any]:
@@ -494,8 +528,6 @@ def _enriquecer_consulta(mensaje: str, context: Dict) -> str:
     if partes:
         return f"Contexto: {'. '.join(partes)}\nConsulta: {mensaje}"
     return mensaje
-
-
 
 
 def generar_mensaje_whatsapp(payload, tipo_contacto="encargado"):
